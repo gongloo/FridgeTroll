@@ -10,13 +10,12 @@ permissions:
 jobs:
   build-firmware:
     name: Build Firmware
-    uses: esphome/workflows/.github/workflows/build.yml@2025.10.0
+    uses: ./.github/workflows/build-esphome.yml
     with:
       #### Modify below here to match your project ####
       files: |
         fridgetroll.yaml
       esphome-version: 2026.2.1
-      pre_command: cp secrets.yaml.example secrets.yaml
       #### Modify above here to match your project ####
 
       release-summary: ${{ github.event.release.body }}

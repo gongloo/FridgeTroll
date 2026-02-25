@@ -1,4 +1,4 @@
 # CHANGEME: Set these variable to your liking
-title: ESPHome Project Template
-description: Powered by ESPHome and ESP Web Tools
+title: FridgeTroll
+description: ESPHome-based smart controller for SECOP compressor-driven refrigerators, providing advanced temperature management, stall detection, and telemetry.
 theme: jekyll-theme-slate

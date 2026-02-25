@@ -52,8 +52,6 @@ esp32_improv:
 captive_portal:
 
 wifi:
-  ssid: !secret homewifi_ssid
-  password: !secret wifi_password
   ap:
     ssid: "FridgeTroll Fallback"
 

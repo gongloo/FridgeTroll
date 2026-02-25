@@ -1,9 +1,5 @@
 # FridgeTroll
 
-**FridgeTroll: A smart ESPHome controller for SECOP compressors featuring advanced thermal management, stall detection, and Home Assistant telemetry.**
-
-## Overview
-
 This repository contains the ESPHome configuration and documentation for FridgeTroll, an advanced replacement for traditional mechanical refrigerator thermostats. It is specifically optimized for the SECOP 101N2000 controller but compatible with most modern variable-speed SECOP units.
 
 ## Key Features

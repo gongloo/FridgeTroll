@@ -16,6 +16,7 @@ jobs:
       files: |
         fridgetroll.yaml
       esphome-version: 2026.2.1
+      pre_command: cp secrets.yaml.example secrets.yaml
       #### Modify above here to match your project ####
 
       release-summary: ${{ github.event.release.body }}

@@ -32,13 +32,10 @@ jobs:
     steps:
       - name: Checkout source code
         uses: actions/checkout@v6
+      - name: Copy secrets.yaml.example to secrets.yaml
+        run: cp secrets.yaml.example secrets.yaml
       - name: ESPHome ${{ matrix.esphome-version }}
         uses: esphome/build-action@v7
         with:
           yaml-file: ${{ matrix.file }}.yaml
-          version: ${{ matrix.esphome-version }}
-      - name: ESPHome ${{ matrix.esphome-version }} Factory
-        uses: esphome/build-action@v7
-        with:
-          yaml-file: ${{ matrix.file }}.factory.yaml
           version: ${{ matrix.esphome-version }}

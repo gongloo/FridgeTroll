@@ -1,0 +1,754 @@
+substitutions:
+  name: "fridgetroll"
+  temp_update_interval_s: 10
+  # Boost compressor speed if it hasn't gotten colder after running the compressor for this many seconds.
+  stall_detection_delay_s: 180
+  # Run the compressor at full blast when kicking on.
+  blast_compressor_for_s: 60
+  # Max speed for the fridge fan as a percentage.
+  max_fridge_fan_speed: 75
+
+  # Dallas sensor addresses. TODO: Make these configurable via the web interface.
+  fridge_temp_address: "0x1800000051a51528"
+  freezer_temp_address: "0xba0000005308a928"
+  compressor_temp_address: "0xf0000000bf1f7228"
+  ambient_temp_address: "0x8c0000007631bc28"
+
+  # Pins for S3 Mini
+  one_wire_bus_pin: GPIO11
+  compressor_enable_pin: GPIO12
+  compressor_pwm_pin: GPIO10
+  fan_speed_pin: GPIO4
+  fan_pwm_pin: GPIO13
+  door_pin: GPIO2
+  rgb_pin: GPIO47
+  fridge_fan_pin: GPIO18
+
+esphome:
+  name: ${name}
+  on_boot:
+    - priority: 600
+      then:
+        - script.execute: pet_fridge_watchdog
+        - script.execute: pet_freezer_watchdog
+    - priority: -10
+      then:
+        - component.update: fridge_temp
+        - component.update: freezer_temp
+
+esp32:
+  board: lolin_s3_mini
+  framework:
+    type: esp-idf
+
+api:
+  reboot_timeout: 0s
+
+improv_serial:
+
+esp32_improv:
+  authorizer: none
+
+captive_portal:
+
+wifi:
+  ssid: !secret homewifi_ssid
+  password: !secret wifi_password
+  ap:
+    ssid: "FridgeTroll Fallback"
+
+web_server:
+  port: 80
+  version: 3
+  local: true
+  sorting_groups:
+    - id: "environment"
+      name: "Environment"
+      sorting_weight: 10
+    - id: "settings"
+      name: "Settings"
+      sorting_weight: 20
+    - id: "compressor_stats"
+      name: "Compressor Stats"
+      sorting_weight: 30
+    - id: "command"
+      name: "Command State"
+      sorting_weight: 40
+    - id: "debug"
+      name: "Debug Tools"
+      sorting_weight: 100
+    - id: "host"
+      name: "Host"
+      sorting_weight: 110
+
+logger:
+  level: DEBUG
+
+select:
+  - platform: logger
+    name: "Logger select"
+    entity_category: "diagnostic"
+    web_server:
+      sorting_group_id: "debug"
+
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+time:
+  - platform: sntp
+    id: sntp_time
+    timezone: "America/New_York"
+
+udp:
+  - id: syslog_udp
+    addresses: !secret syslog_ip
+  - id: influxdb_udp
+    addresses: !secret influxdb_host
+    port: !secret influxdb_port
+
+syslog:
+  udp_id: syslog_udp
+  port: !secret syslog_port
+  strip: true # strip color codes
+  level: info
+
+one_wire:
+  - platform: gpio
+    pin: ${one_wire_bus_pin}
+    id: fridge_bus
+
+sensor:
+  - platform: internal_temperature
+    name: "ESP Temperature"
+    id: sys_esp_temperature
+    update_interval: 60s
+    icon: "mdi:thermometer-lines"
+    web_server:
+      sorting_group_id: "host"
+
+  - platform: uptime
+    name: Uptime
+    id: sys_uptime
+    update_interval: ${temp_update_interval_s}s
+    web_server:
+      sorting_group_id: "host"
+
+  - platform: wifi_signal
+    name: RSSI
+    icon: "mdi:wifi"
+    id: wifi_signal_db
+    update_interval: ${temp_update_interval_s}s
+    entity_category: "diagnostic"
+    web_server:
+      sorting_group_id: "host"
+
+  - platform: dallas_temp
+    address: ${fridge_temp_address}
+    name: "Fridge Temperature"
+    icon: "mdi:water-thermometer"
+    web_server:
+      sorting_group_id: "environment"
+    id: fridge_temp
+    update_interval: never # Updated by interval
+    filters:
+      - lambda: |-
+          if (x == 85.0) {
+            ESP_LOGE("fridge_temp", "Sensor (fridge_temp) reported 85°C (power-on reset value), filtering out.");
+            return {};
+          }
+          return x;
+    on_value:
+      then:
+        - script.execute: pet_fridge_watchdog
+
+  - platform: dallas_temp
+    address: ${freezer_temp_address}
+    name: "Freezer Temperature"
+    icon: "mdi:snowflake-thermometer"
+    web_server:
+      sorting_group_id: "environment"
+    id: freezer_temp
+    update_interval: never # Updated by interval
+    filters:
+      - lambda: |-
+          if (x == 85.0) {
+            ESP_LOGE("freezer_temp", "Sensor (freezer_temp) reported 85°C (power-on reset value), filtering out.");
+            return {};
+          }
+          return x;
+    on_value:
+      then:
+        - script.execute: pet_freezer_watchdog
+
+  - platform: copy
+    name: "Fridge Temperature -${stall_detection_delay_s}s"
+    icon: "mdi:water-thermometer"
+    id: fridge_temp_delayed
+    source_id: fridge_temp
+    filters:
+      - lambda: |-
+          static std::vector<float> buffer;
+          buffer.push_back(x);
+          if (buffer.size() > (${stall_detection_delay_s} / ${temp_update_interval_s})) {
+            float ret = buffer.front();
+            buffer.erase(buffer.begin());
+            return ret;
+          }
+          return {};
+    web_server:
+      sorting_group_id: "compressor_stats"
+
+  - platform: copy
+    name: "Freezer Temperature -${stall_detection_delay_s}s"
+    icon: "mdi:water-thermometer"
+    id: freezer_temp_delayed
+    source_id: freezer_temp
+    filters:
+      - lambda: |-
+          static std::vector<float> buffer;
+          buffer.push_back(x);
+          if (buffer.size() > (${stall_detection_delay_s} / ${temp_update_interval_s})) {
+            float ret = buffer.front();
+            buffer.erase(buffer.begin());
+            return ret;
+          }
+          return {};
+    web_server:
+      sorting_group_id: "compressor_stats"
+
+  - platform: pulse_counter
+    name: "Fan Speed"
+    id: "compressor_fan_rpm"
+    icon: "mdi:fan"
+    web_server:
+      sorting_group_id: "compressor_stats"
+    unit_of_measurement: "RPM"
+    accuracy_decimals: 0
+    filters:
+      - lambda: return x / 2.0;
+    update_interval: ${temp_update_interval_s}s
+    pin:
+      number: ${fan_speed_pin}
+      inverted: true
+      mode:
+        input: true
+        pullup: true
+
+  - platform: duty_time
+    id: compressor_on_time
+    name: "Compressor On Time"
+    icon: "mdi:pump"
+    web_server:
+      sorting_group_id: "compressor_stats"
+    lambda: "return id(compressor).state;"
+    accuracy_decimals: 0
+    update_interval: ${temp_update_interval_s}s
+    last_time:
+      name: "Last Compressor On Time"
+      icon: "mdi:pump"
+      web_server:
+        sorting_group_id: "compressor_stats"
+      accuracy_decimals: 0
+
+  - platform: duty_time
+    id: compressor_off_time
+    name: "Compressor Off Time"
+    icon: "mdi:pump-off"
+    web_server:
+      sorting_group_id: "compressor_stats"
+    lambda: "return !id(compressor).state;"
+    accuracy_decimals: 0
+    update_interval: ${temp_update_interval_s}s
+    last_time:
+      name: "Last Compressor Off Time"
+      icon: "mdi:pump-off"
+      web_server:
+        sorting_group_id: "compressor_stats"
+      accuracy_decimals: 0
+
+  - platform: duty_time
+    id: door_open_time
+    internal: true
+    lambda: "return !id(door_closed).state;"
+    update_interval: ${temp_update_interval_s}s
+
+  - platform: template
+    id: compressor_rpm
+    internal: True
+    update_interval: never # Updated from compressor fan
+    on_value:
+      - lambda: |-
+          if (x < 2000) return;
+          float ratio = (x - 2000.0) / 2000.0;
+          if (ratio < 0) ratio = 0;
+          if (ratio > 1) ratio = 1;
+          const float duty = (0.87 - (ratio * 0.6));
+          ESP_LOGD("compressor_rpm", "Setting compressor PWM output to %f.", duty);
+          id(compressor_pwm).set_level(duty);
+
+
+  - platform: dallas_temp
+    address: ${compressor_temp_address}
+    name: "Compressor Temperature"
+    id: compressor_temp
+    icon: "mdi:radiator"
+    web_server:
+      sorting_group_id: "environment"
+    update_interval: never # Updated by interval
+    filters:
+      - lambda: |-
+          if (x == 85.0) {
+            ESP_LOGE("compressor_temp", "Sensor (compressor_temp) reported 85°C (power-on reset value), filtering out.");
+            return {};
+          }
+          return x;
+    on_value:
+      then:
+        - lambda: |-
+            constexpr float kHighCompressorTemp = 43;
+            constexpr float kMinFanSpeed = 30.0; // Minimum fan speed %
+            constexpr float kMaxFanSpeed = 100.0; // Maximum fan speed %
+
+            const float comp_temp = x;
+            const float amb_temp = id(ambient_temp).state;
+
+            if (std::isnan(comp_temp) || std::isnan(amb_temp)) {
+              auto call = id(compressor_cooling_fan).turn_on();
+              call.set_speed(100);
+              call.perform();
+              return;
+            }
+
+            const float delta = comp_temp - amb_temp;
+
+            // Fan curve configuration (Delta T from ambient)
+            const float min_delta = 5.0; // Fan starts here
+            const float max_delta = std::min(15.0f, kHighCompressorTemp - amb_temp); // Fan at max speed here
+
+            if (delta < min_delta) {
+              if (id(compressor_cooling_fan).state) {
+                id(compressor_cooling_fan).turn_off().perform();
+              }
+              return;
+            }
+
+            // Linear interpolation.
+            const float speed_factor = ((delta - min_delta) / (max_delta - min_delta));
+            const float speed_percent = kMinFanSpeed + (kMaxFanSpeed - kMinFanSpeed) * speed_factor;
+            auto call = id(compressor_cooling_fan).turn_on();
+            call.set_speed(std::min(100.0f, speed_percent));
+            call.perform();
+
+  - platform: dallas_temp
+    address: ${ambient_temp_address}
+    name: "Ambient Temperature"
+    id: ambient_temp
+    icon: "mdi:home-thermometer"
+    web_server:
+      sorting_group_id: "environment"
+    update_interval: never # Updated by interval
+    filters:
+      - lambda: |-
+          if (x == 85.0) {
+            ESP_LOGE("ambient_temp", "Sensor (ambient_temp) reported 85°C (power-on reset value), filtering out.");
+            return {};
+          }
+          return x;
+
+switch:
+  - platform: template
+    name: "Manual Override"
+    id: manual_override
+    icon: "mdi:cog-transfer"
+    restore_mode: RESTORE_DEFAULT_ON
+    optimistic: true
+    entity_category: "diagnostic"
+    web_server:
+      sorting_group_id: "debug"
+
+binary_sensor:
+  - platform: gpio
+    pin:
+      number: ${door_pin}
+      mode: INPUT_PULLUP
+    name: "Door Closed"
+    id: "door_closed"
+    icon: "mdi:fridge-industrial"
+    web_server:
+      sorting_group_id: "environment"
+    on_release:
+      - light.turn_on:
+          id: onboard_rgb_light
+          red: 1.0
+          green: 1.0
+          blue: 0.0
+          brightness: 1.0
+      - sensor.duty_time.reset: door_open_time
+      # Sync to 1 immediately for our external triggers/monitoring
+      - delay: 1s
+      - component.update: door_open_time
+      - script.execute: report_stats
+    on_press:
+      - light.turn_off:
+          id: onboard_rgb_light
+      - component.update: door_open_time # Sync final duration.
+      - script.execute: report_stats
+      # Sync zero immediately for our eternal triggers/monitoring.
+      - sensor.duty_time.reset: door_open_time
+      - script.execute: report_stats
+
+output:
+  - platform: ledc
+    pin: ${compressor_pwm_pin}
+    frequency: 200Hz
+    channel: 0
+    id: compressor_pwm
+
+  - platform: gpio
+    pin: ${compressor_enable_pin}
+    id: compressor_enable_output
+
+  - platform: ledc
+    pin: ${fan_pwm_pin}
+    frequency: 25kHz
+    channel: 2
+    id: compressor_cooling_fan_pwm
+
+  - platform: ledc
+    pin: ${fridge_fan_pin}
+    frequency: 25kHz
+    channel: 4
+    id: fridge_fan_pwm
+
+fan:
+  - platform: speed
+    output: compressor_cooling_fan_pwm
+    name: "Compressor Cooling Fan"
+    id: compressor_cooling_fan
+    icon: "mdi:fan"
+    web_server:
+      sorting_group_id: "command"
+
+  - platform: speed
+    output: fridge_fan_pwm
+    name: "Fridge Fan"
+    id: fridge_fan
+    icon: "mdi:fan"
+    web_server:
+      sorting_group_id: "command"
+
+  - platform: template
+    name: "Compressor"
+    id: compressor
+    icon: "mdi:pump"
+    web_server:
+      sorting_group_id: "command"
+    speed_count: 5
+    restore_mode: RESTORE_DEFAULT_OFF
+    on_turn_on:
+      - output.turn_on: compressor_enable_output
+      - sensor.duty_time.reset: compressor_on_time
+      - component.update: compressor_off_time
+      - sensor.duty_time.reset: compressor_off_time
+      - lambda: |-
+          id(compressor_rpm).publish_state((id(compressor).speed - 1) * 500 + 2000);
+    on_turn_off:
+      - output.turn_off: compressor_enable_output
+      - component.update: compressor_on_time
+      - sensor.duty_time.reset: compressor_on_time
+      - sensor.duty_time.reset: compressor_off_time
+    on_speed_set:
+      - lambda: |-
+          id(compressor_rpm).publish_state((id(compressor).speed - 1) * 500 + 2000);
+
+climate:
+  - platform: bang_bang
+    name: "Fridge Thermostat"
+    id: fridge_thermostat
+    sensor: fridge_temp
+    icon: "mdi:fridge-bottom"
+    web_server:
+      sorting_group_id: "settings"
+
+    default_target_temperature_low: 2
+    default_target_temperature_high: 3.5
+
+    visual:
+      min_temperature: 1
+      max_temperature: 5
+      temperature_step: 0.5
+
+    idle_action:
+      then:
+    cool_action:
+      then:
+    on_control:
+      - script.execute: update_cooling
+
+  - platform: bang_bang
+    name: "Freezer Thermostat"
+    id: freezer_thermostat
+    sensor: freezer_temp
+    icon: "mdi:fridge-top"
+    web_server:
+      sorting_group_id: "settings"
+
+    # Note the freezer should typically be much colder than this.
+    # Setting these too low might cause the fridge to get too cold!
+    default_target_temperature_low: -15
+    default_target_temperature_high: -9.5
+
+    visual:
+      min_temperature: -18
+      max_temperature: -7
+      temperature_step: 0.5
+
+    idle_action:
+      then:
+    cool_action:
+      then:
+    on_control:
+      - script.execute: update_cooling
+
+button:
+  - platform: template
+    name: "Dump Sensor IDs"
+    icon: "mdi:chip"
+    entity_category: "diagnostic"
+    web_server:
+      sorting_group_id: "debug"
+    on_press:
+      - lambda: id(fridge_bus).dump_config();
+
+  - platform: restart
+    name: "Restart"
+    id: restart_button
+    entity_category: "diagnostic"
+    web_server:
+      sorting_group_id: "host"
+
+light:
+  - platform: esp32_rmt_led_strip
+    chipset: WS2812
+    rgb_order: GRB
+    pin: ${rgb_pin}
+    num_leds: 1
+    name: "Onboard RGB"
+    id: onboard_rgb_light
+    icon: "mdi:led-on"
+    web_server:
+      sorting_group_id: "command"
+
+script:
+  - id: pet_fridge_watchdog
+    mode: restart # Restarting kills the previous delay
+    then:
+      - delay: 3.5min
+      - logger.log:
+          tag: fridge_watchdog
+          level: ERROR
+          format: "Too long since last fridge watchdog pet!"
+      - if:
+          condition:
+            switch.is_off: manual_override
+          then:
+            - button.press: restart_button
+
+  - id: pet_freezer_watchdog
+    mode: restart # Restarting kills the previous delay
+    then:
+      - delay: 3.5min
+      - logger.log:
+          tag: freezer_watchdgo
+          level: ERROR
+          format: "Too long since last freezer watchdog pet!"
+      - if:
+          condition:
+            switch.is_off: manual_override
+          then:
+            - button.press: restart_button
+
+  - id: update_cooling
+    then:
+      - lambda: |-
+          static uint32_t last_compressor_speed_increase = 0;
+
+          if(id(manual_override).state) {
+            ESP_LOGW("update_cooling", "Manual override is on, skipping automatic speed update.");
+            return;
+          }
+
+          const bool cool_fridge = id(fridge_thermostat).action == CLIMATE_ACTION_COOLING;
+          const bool cool_freezer = id(freezer_thermostat).action == CLIMATE_ACTION_COOLING;
+
+          if (!cool_fridge && !cool_freezer) {
+            if (id(compressor).state) {
+              id(compressor).turn_off().perform();
+            }
+            if (id(fridge_fan).state) {
+              id(fridge_fan).turn_off().perform();
+            }
+            return;
+          }
+
+          bool fridge_fan_on = false;
+          auto next_compressor_speed = std::max(id(compressor).speed, 1);
+
+          const float freezer_temp_delta_low =
+              id(freezer_temp).state - id(freezer_thermostat).target_temperature_low;
+          const float fridge_temp_delta_low =
+              id(fridge_temp).state - id(fridge_thermostat).target_temperature_low;
+
+          if (cool_fridge) {
+            fridge_fan_on=true;
+          } else if (id(fridge_fan).state) {
+            fridge_fan_on=false;
+          }
+
+          id(compressor_on_time).update();
+          if (id(compressor_on_time).state < ${blast_compressor_for_s}) {
+            // Always start compressor at max.
+            next_compressor_speed = 5;
+          } else if (freezer_temp_delta_low > 1.5) {
+            // Blast the freezer.
+            next_compressor_speed = 5;
+          } else {
+            // Figure out speed based on delta to targets
+            if (freezer_temp_delta_low > 0.2) {
+              next_compressor_speed = 5;
+            } else if (freezer_temp_delta_low > 0) {
+              next_compressor_speed = 3;
+            } else {
+              next_compressor_speed = 2;
+            }
+
+            // Boost speed if we're not making progress.
+            if (next_compressor_speed <= id(compressor).speed &&
+                next_compressor_speed < 5 &&
+                millis() - last_compressor_speed_increase > ${stall_detection_delay_s} * 1000 &&
+                (cool_freezer && id(freezer_temp_delayed).state <= id(freezer_temp).state) && 
+                id(compressor_on_time).state > ${stall_detection_delay_s}) {
+              ++next_compressor_speed;
+              ESP_LOGI("update_cooling", "Freezer cooling stalled! Increasing speed to %.0fRPM. (Old %.1f°C <= Cur %.1f°C)",
+                       id(compressor_rpm).state + 500,
+                       id(freezer_temp_delayed).state,
+                       id(freezer_temp).state);
+            }
+          }
+
+          // Turn on the fridge fan opportunistically.
+          if (next_compressor_speed > 0 &&
+              fridge_temp_delta_low > 0.25 &&
+              id(freezer_temp).state < id(freezer_thermostat).target_temperature_high - 0.5) {
+            fridge_fan_on = true;
+          }
+
+          // Check if the compressor needs an anti-short-cycle delay (180 seconds)
+          if (!id(compressor).state && id(compressor_off_time).state < 180) {
+            ESP_LOGI("update_cooling", "Anti-short-cycle delay active (%.0fs left). Compressor start deferred.", 180 - id(compressor_off_time).state);
+          } else {
+            if (!id(compressor).state || id(compressor).speed != next_compressor_speed) {
+              if (next_compressor_speed > id(compressor).speed) {
+                last_compressor_speed_increase = millis();
+              }
+
+              auto call = id(compressor).turn_on();
+              call.set_speed(next_compressor_speed);
+              call.perform();
+            }
+          }
+
+          if (id(fridge_fan).state != fridge_fan_on || id(fridge_fan).speed != ${max_fridge_fan_speed}) {
+            if (fridge_fan_on) {
+              auto call = id(fridge_fan).turn_on();
+              call.set_speed(${max_fridge_fan_speed});
+              call.perform();
+            } else {
+              id(fridge_fan).turn_off().perform();
+            }
+          }
+
+  - id: report_stats
+    then:
+      #- influxdb.publish_batch:
+      #    - full_dump
+      - udp.write:
+          id: influxdb_udp
+          data: !lambda |-
+            std::string payload = "fridgetroll,host=${name}";
+            char buf[64];
+
+            snprintf(buf, sizeof(buf), " door_closed=%c", id(door_closed).state ? 'T' : 'F');
+            payload += buf;
+
+            snprintf(buf, sizeof(buf), ",uptime=%ui", (uint32_t)id(sys_uptime).state);
+            payload += buf;
+
+            if (!std::isnan(id(fridge_temp).state)) {
+              snprintf(buf, sizeof(buf), ",fridge_temperature=%.4g", id(fridge_temp).state);
+              payload += buf;
+            }
+            if (!std::isnan(id(freezer_temp).state)) {
+              snprintf(buf, sizeof(buf), ",freezer_temperature=%.4g", id(freezer_temp).state);
+              payload += buf;
+            }
+
+            snprintf(buf, sizeof(buf), ",compressor_on_time=%ui", (uint32_t)id(compressor_on_time).state);
+            payload += buf;
+
+            if (!std::isnan(id(compressor_rpm).state)) {
+              snprintf(buf, sizeof(buf), ",compressor_rpm=%ui", (uint32_t)id(compressor_rpm).state);
+              payload += buf;
+            }
+            if (!std::isnan(id(fridge_thermostat).target_temperature_low)) {
+              snprintf(buf, sizeof(buf), ",fridge_target_temp_low=%.4g", id(fridge_thermostat).target_temperature_low);
+              payload += buf;
+            }
+            if (!std::isnan(id(fridge_thermostat).target_temperature_high)) {
+              snprintf(buf, sizeof(buf), ",fridge_target_temp_high=%.4g", id(fridge_thermostat).target_temperature_high);
+              payload += buf;
+            }
+            if (!std::isnan(id(freezer_thermostat).target_temperature_low)) {
+              snprintf(buf, sizeof(buf), ",freezer_target_temp_low=%.4g", id(freezer_thermostat).target_temperature_low);
+              payload += buf;
+            }
+            if (!std::isnan(id(freezer_thermostat).target_temperature_high)) {
+              snprintf(buf, sizeof(buf), ",freezer_target_temp_high=%.4g", id(freezer_thermostat).target_temperature_high);
+              payload += buf;
+            }
+            if (!std::isnan(id(compressor_temp).state)) {
+              snprintf(buf, sizeof(buf), ",compressor_temperature=%.4g", id(compressor_temp).state);
+              payload += buf;
+            }
+            if (!std::isnan(id(ambient_temp).state)) {
+              snprintf(buf, sizeof(buf), ",ambient_temperature=%.4g", id(ambient_temp).state);
+              payload += buf;
+            }
+            if (!std::isnan(id(compressor_fan_rpm).state)) {
+              snprintf(buf, sizeof(buf), ",fan_speed=%.4g", id(compressor_fan_rpm).state);
+              payload += buf;
+            }
+            if (!id(fridge_fan).state || !std::isnan(id(fridge_fan).speed)) {
+              snprintf(buf, sizeof(buf), ",fridge_fan_speed=%d", id(fridge_fan).state ? id(fridge_fan).speed : 0);
+              payload += buf;
+            }
+
+            ESP_LOGD("report_stats", "Sending stats via UDP: %s", payload.c_str());
+            return std::vector<uint8_t>(payload.begin(), payload.end());
+
+interval:
+  # Update our temperature values in series with a short delay in between.
+  # This helps when reading DS18B20 with parasitic power.
+  - interval: ${temp_update_interval_s}s
+    startup_delay: 1s
+    then:
+      - component.update: fridge_temp
+      - delay: 1s
+      - component.update: freezer_temp
+      - delay: 1s
+      - component.update: ambient_temp
+      - delay: 1s
+      - component.update: compressor_temp
+      - script.execute: update_cooling
+      - script.execute: report_stats

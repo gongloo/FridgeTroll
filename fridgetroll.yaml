@@ -24,6 +24,7 @@ esphome:
     - priority: 600
       then:
         - script.execute: apply_sensor_addresses
+        - script.execute: apply_udp_addresses
         - script.execute: pet_fridge_watchdog
         - script.execute: pet_freezer_watchdog
     - priority: -10
@@ -95,14 +96,10 @@ time:
 
 udp:
   - id: syslog_udp
-    addresses: !secret syslog_ip
   - id: influxdb_udp
-    addresses: !secret influxdb_host
-    port: !secret influxdb_port
 
 syslog:
   udp_id: syslog_udp
-  port: !secret syslog_port
   strip: true # strip color codes
   level: info
 
@@ -406,6 +403,69 @@ text:
     on_value:
       - script.execute: apply_sensor_addresses
 
+  - platform: template
+    mode: text
+    name: "Syslog Server IP"
+    id: syslog_ip_text
+    icon: "mdi:ip-network"
+    optimistic: true
+    min_length: 7
+    max_length: 15
+    restore_value: true
+    entity_category: "config"
+    web_server:
+      sorting_group_id: "settings"
+    on_value:
+      - script.execute: apply_udp_addresses
+
+  - platform: template
+    mode: text
+    name: "InfluxDB Host IP"
+    id: influxdb_host_text
+    icon: "mdi:ip-network"
+    optimistic: true
+    min_length: 7
+    max_length: 15
+    restore_value: true
+    entity_category: "config"
+    web_server:
+      sorting_group_id: "settings"
+    on_value:
+      - script.execute: apply_udp_addresses
+
+number:
+  - platform: template
+    name: "Syslog Port"
+    id: syslog_port_number
+    icon: "mdi:network-port"
+    optimistic: true
+    min_value: 1
+    max_value: 65535
+    initial_value: 514
+    step: 1
+    restore_value: true
+    entity_category: "config"
+    web_server:
+      sorting_group_id: "settings"
+    on_value:
+      - script.execute: apply_udp_addresses
+
+  - platform: template
+    name: "InfluxDB Port"
+    id: influxdb_port_number
+    icon: "mdi:network-port"
+    optimistic: true
+    min_value: 1
+    max_value: 65535
+    initial_value: 8089
+    step: 1
+    restore_value: true
+    entity_category: "config"
+    web_server:
+      sorting_group_id: "settings"
+    on_value:
+      - script.execute: apply_udp_addresses
+
 switch:
   - platform: template
     name: "Manual Override"
@@ -605,6 +665,26 @@ script:
 
           addr = strtoull(id(ambient_temp_address_text).state.c_str(), nullptr, 16);
           if (addr > 0) id(ambient_temp).set_address(addr);
+
+  - id: apply_udp_addresses
+    then:
+      - lambda: |-
+          if (!id(syslog_ip_text).state.empty()) {
+            id(syslog_udp)->set_addresses({id(syslog_ip_text).state.c_str()});
+          }
+          if (id(syslog_port_number).state > 0) {
+            id(syslog_udp)->set_broadcast_port(id(syslog_port_number).state);
+          }
+          id(syslog_udp)->setup();
+          id(syslog_udp)->dump_config();
+          if (!id(influxdb_host_text).state.empty()) {
+            id(influxdb_udp)->set_addresses({id(influxdb_host_text).state.c_str()});
+          }
+          if (id(influxdb_port_number).state > 0) {
+            id(influxdb_udp)->set_broadcast_port(id(influxdb_port_number).state);
+          }
+          id(influxdb_udp)->setup();
+          id(influxdb_udp)->dump_config();
 
   - id: pet_fridge_watchdog
     mode: restart # Restarting kills the previous delay

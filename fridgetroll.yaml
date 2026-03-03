@@ -8,12 +8,6 @@ substitutions:
   # Max speed for the fridge fan as a percentage.
   max_fridge_fan_speed: 75
 
-  # Dallas sensor addresses. TODO: Make these configurable via the web interface.
-  fridge_temp_address: "0x1800000051a51528"
-  freezer_temp_address: "0xba0000005308a928"
-  compressor_temp_address: "0xf0000000bf1f7228"
-  ambient_temp_address: "0x8c0000007631bc28"
-
   # Pins for S3 Mini
   one_wire_bus_pin: GPIO11
   compressor_enable_pin: GPIO12
@@ -29,6 +23,7 @@ esphome:
   on_boot:
     - priority: 600
       then:
+        - script.execute: apply_sensor_addresses
         - script.execute: pet_fridge_watchdog
         - script.execute: pet_freezer_watchdog
     - priority: -10
@@ -142,7 +137,6 @@ sensor:
       sorting_group_id: "host"
 
   - platform: dallas_temp
-    address: ${fridge_temp_address}
     name: "Fridge Temperature"
     icon: "mdi:water-thermometer"
     web_server:
@@ -161,7 +155,6 @@ sensor:
         - script.execute: pet_fridge_watchdog
 
   - platform: dallas_temp
-    address: ${freezer_temp_address}
     name: "Freezer Temperature"
     icon: "mdi:snowflake-thermometer"
     web_server:
@@ -287,7 +280,6 @@ sensor:
 
 
   - platform: dallas_temp
-    address: ${compressor_temp_address}
     name: "Compressor Temperature"
     id: compressor_temp
     icon: "mdi:radiator"
@@ -339,7 +331,6 @@ sensor:
             call.perform();
 
   - platform: dallas_temp
-    address: ${ambient_temp_address}
     name: "Ambient Temperature"
     id: ambient_temp
     icon: "mdi:home-thermometer"
@@ -353,6 +344,67 @@ sensor:
             return {};
           }
           return x;
+
+text:
+  - platform: template
+    mode: text
+    name: "Fridge Temperature Address"
+    id: fridge_temp_address_text
+    icon: "mdi:identifier"
+    optimistic: true
+    min_length: 18
+    max_length: 18
+    restore_value: true
+    entity_category: "config"
+    web_server:
+      sorting_group_id: "settings"
+    on_value:
+      - script.execute: apply_sensor_addresses
+
+  - platform: template
+    mode: text
+    name: "Freezer Temperature Address"
+    id: freezer_temp_address_text
+    icon: "mdi:identifier"
+    optimistic: true
+    min_length: 18
+    max_length: 18
+    restore_value: true
+    entity_category: "config"
+    web_server:
+      sorting_group_id: "settings"
+    on_value:
+      - script.execute: apply_sensor_addresses
+
+  - platform: template
+    mode: text
+    name: "Compressor Temperature Address"
+    id: compressor_temp_address_text
+    icon: "mdi:identifier"
+    optimistic: true
+    min_length: 18
+    max_length: 18
+    restore_value: true
+    entity_category: "config"
+    web_server:
+      sorting_group_id: "settings"
+    on_value:
+      - script.execute: apply_sensor_addresses
+
+  - platform: template
+    mode: text
+    name: "Ambient Temperature Address"
+    id: ambient_temp_address_text
+    icon: "mdi:identifier"
+    optimistic: true
+    min_length: 18
+    max_length: 18
+    restore_value: true
+    entity_category: "config"
+    web_server:
+      sorting_group_id: "settings"
+    on_value:
+      - script.execute: apply_sensor_addresses
 
 switch:
   - platform: template
@@ -539,6 +591,21 @@ light:
       sorting_group_id: "command"
 
 script:
+  - id: apply_sensor_addresses
+    then:
+      - lambda: |-
+          uint64_t addr = strtoull(id(fridge_temp_address_text).state.c_str(), nullptr, 16);
+          if (addr > 0) id(fridge_temp).set_address(addr);
+
+          addr = strtoull(id(freezer_temp_address_text).state.c_str(), nullptr, 16);
+          if (addr > 0) id(freezer_temp).set_address(addr);
+
+          addr = strtoull(id(compressor_temp_address_text).state.c_str(), nullptr, 16);
+          if (addr > 0) id(compressor_temp).set_address(addr);
+
+          addr = strtoull(id(ambient_temp_address_text).state.c_str(), nullptr, 16);
+          if (addr > 0) id(ambient_temp).set_address(addr);
+
   - id: pet_fridge_watchdog
     mode: restart # Restarting kills the previous delay
     then:

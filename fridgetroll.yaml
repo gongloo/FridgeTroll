@@ -25,8 +25,20 @@ esphome:
   on_boot:
     - priority: 600
       then:
+        - lambda: |-
+            if (!id(syslog_ip_text).state.empty()) {
+              id(syslog_udp)->set_addresses({id(syslog_ip_text).state.c_str()});
+            }
+            if (id(syslog_port_number).state > 0) {
+              id(syslog_udp)->set_broadcast_port(id(syslog_port_number).state);
+            }
+            if (!id(influxdb_host_text).state.empty()) {
+              id(influxdb_udp)->set_addresses({id(influxdb_host_text).state.c_str()});
+            }
+            if (id(influxdb_port_number).state > 0) {
+              id(influxdb_udp)->set_broadcast_port(id(influxdb_port_number).state);
+            }
         - script.execute: apply_sensor_addresses
-        - script.execute: apply_udp_addresses
         - script.execute: pet_fridge_watchdog
         - script.execute: pet_freezer_watchdog
     - priority: -10
@@ -109,6 +121,12 @@ one_wire:
   - platform: gpio
     pin: ${one_wire_bus_pin}
     id: fridge_bus
+
+text_sensor:
+  - platform: version
+    name: "ESPHome Version"
+    web_server:
+      sorting_group_id: "host"
 
 sensor:
   - platform: internal_temperature
@@ -380,8 +398,6 @@ text:
     entity_category: "config"
     web_server:
       sorting_group_id: "settings"
-    on_value:
-      - script.execute: apply_udp_addresses
 
   - platform: template
     mode: text
@@ -395,8 +411,6 @@ text:
     entity_category: "config"
     web_server:
       sorting_group_id: "settings"
-    on_value:
-      - script.execute: apply_udp_addresses
 
 number:
   - platform: template
@@ -412,8 +426,6 @@ number:
     entity_category: "config"
     web_server:
       sorting_group_id: "settings"
-    on_value:
-      - script.execute: apply_udp_addresses
 
   - platform: template
     name: "InfluxDB Port"
@@ -428,8 +440,6 @@ number:
     entity_category: "config"
     web_server:
       sorting_group_id: "settings"
-    on_value:
-      - script.execute: apply_udp_addresses
 
   - platform: template
     name: "Compressor Speed Min Interval"
@@ -646,26 +656,6 @@ script:
           addr = strtoull(id(ambient_temp_address_text).state.c_str(), nullptr, 16);
           if (addr > 0) id(ambient_temp).set_address(addr);
 
-  - id: apply_udp_addresses
-    then:
-      - lambda: |-
-          if (!id(syslog_ip_text).state.empty()) {
-            id(syslog_udp)->set_addresses({id(syslog_ip_text).state.c_str()});
-          }
-          if (id(syslog_port_number).state > 0) {
-            id(syslog_udp)->set_broadcast_port(id(syslog_port_number).state);
-          }
-          id(syslog_udp)->setup();
-          id(syslog_udp)->dump_config();
-          if (!id(influxdb_host_text).state.empty()) {
-            id(influxdb_udp)->set_addresses({id(influxdb_host_text).state.c_str()});
-          }
-          if (id(influxdb_port_number).state > 0) {
-            id(influxdb_udp)->set_broadcast_port(id(influxdb_port_number).state);
-          }
-          id(influxdb_udp)->setup();
-          id(influxdb_udp)->dump_config();
-
   - id: pet_fridge_watchdog
     mode: restart # Restarting kills the previous delay
     then:
@@ -815,17 +805,21 @@ script:
           id: influxdb_udp
           data: !lambda |-
             char rpt[512];
-            int len = snprintf(rpt, sizeof(rpt), "fridgetroll,host=${name} door_closed=%c,uptime=%u",
-                               id(door_closed).state ? 'T' : 'F', (uint32_t)id(sys_uptime).state);
+            int len = snprintf(rpt, sizeof(rpt), "fridgetroll,host=${name} door_closed=%c",
+                               id(door_closed).state ? 'T' : 'F');
 
-            auto add_val = [&](const char* name, float val, const char* fmt = ",%s=%.4g") {
-              if (!std::isnan(val)) len += snprintf(rpt + len, sizeof(rpt) - len, fmt, name, val);
+            auto add_val = [&](const char* name, float val) {
+              if (!std::isnan(val)) len += snprintf(rpt + len, sizeof(rpt) - len, ",%s=%.4g", name, val);
+            };
+            auto add_int = [&](const char* name, float val) {
+              if (!std::isnan(val)) len += snprintf(rpt + len, sizeof(rpt) - len, ",%s=%ui", name, (uint32_t)val);
             };
 
+            add_int("uptime", id(sys_uptime).state);
             add_val("fridge_temperature", id(fridge_temp).state);
             add_val("freezer_temperature", id(freezer_temp).state);
-            add_val("compressor_on_time", id(compressor_on_time).state, ",%s=%u");
-            add_val("compressor_rpm", id(compressor_rpm).state, ",%s=%u");
+            add_int("compressor_on_time", id(compressor_on_time).state);
+            add_int("compressor_rpm", id(compressor_rpm).state);
             add_val("fridge_target_temp_low", id(fridge_thermostat).target_temperature_low);
             add_val("fridge_target_temp_high", id(fridge_thermostat).target_temperature_high);
             add_val("freezer_target_temp_low", id(freezer_thermostat).target_temperature_low);
@@ -835,8 +829,7 @@ script:
             add_val("fan_speed", id(compressor_fan_rpm).state);
 
             if (id(fridge_fan).state || !std::isnan(id(fridge_fan).speed)) {
-              len += snprintf(rpt + len, sizeof(rpt) - len, ",fridge_fan_speed=%d", 
-                              id(fridge_fan).state ? (int)id(fridge_fan).speed : 0);
+              add_val("fridge_fan_speed", id(fridge_fan).state ? id(fridge_fan).speed : 0.0f);
             }
 
             ESP_LOGD("report_stats", "UDP: %s", rpt);

@@ -1,12 +1,12 @@
 substitutions:
   name: "fridgetroll"
   temp_update_interval_s: 10
-  # Boost compressor speed if it hasn't gotten colder after running the compressor for this many seconds.
-  stall_detection_delay_s: 180
   # Run the compressor at full blast when kicking on.
   blast_compressor_for_s: 60
   # Max speed for the fridge fan as a percentage.
   max_fridge_fan_speed: 75
+  # Exception window for speed changes in the same direction.
+  compressor_speed_change_burst_window_s: 15
 
   # Pins for S3 Mini
   one_wire_bus_pin: GPIO11
@@ -169,42 +169,6 @@ sensor:
       then:
         - script.execute: pet_freezer_watchdog
 
-  - platform: copy
-    name: "Fridge Temperature -${stall_detection_delay_s}s"
-    icon: "mdi:water-thermometer"
-    id: fridge_temp_delayed
-    source_id: fridge_temp
-    filters:
-      - lambda: |-
-          static std::vector<float> buffer;
-          buffer.push_back(x);
-          if (buffer.size() > (${stall_detection_delay_s} / ${temp_update_interval_s})) {
-            float ret = buffer.front();
-            buffer.erase(buffer.begin());
-            return ret;
-          }
-          return {};
-    web_server:
-      sorting_group_id: "compressor_stats"
-
-  - platform: copy
-    name: "Freezer Temperature -${stall_detection_delay_s}s"
-    icon: "mdi:water-thermometer"
-    id: freezer_temp_delayed
-    source_id: freezer_temp
-    filters:
-      - lambda: |-
-          static std::vector<float> buffer;
-          buffer.push_back(x);
-          if (buffer.size() > (${stall_detection_delay_s} / ${temp_update_interval_s})) {
-            float ret = buffer.front();
-            buffer.erase(buffer.begin());
-            return ret;
-          }
-          return {};
-    web_server:
-      sorting_group_id: "compressor_stats"
-
   - platform: pulse_counter
     name: "Fan Speed"
     id: "compressor_fan_rpm"
@@ -274,7 +238,6 @@ sensor:
           const float duty = (0.87 - (ratio * 0.6));
           ESP_LOGD("compressor_rpm", "Setting compressor PWM output to %f.", duty);
           id(compressor_pwm).set_level(duty);
-
 
   - platform: dallas_temp
     name: "Compressor Temperature"
@@ -465,6 +428,21 @@ number:
       sorting_group_id: "settings"
     on_value:
       - script.execute: apply_udp_addresses
+
+  - platform: template
+    name: "Compressor Speed Min Interval"
+    id: compressor_speed_change_interval_number
+    icon: "mdi:clock-fast"
+    optimistic: true
+    min_value: 0
+    max_value: 600
+    initial_value: 60
+    step: 1
+    unit_of_measurement: "s"
+    restore_value: true
+    entity_category: "config"
+    web_server:
+      sorting_group_id: "settings"
 
 switch:
   - platform: template
@@ -717,7 +695,8 @@ script:
   - id: update_cooling
     then:
       - lambda: |-
-          static uint32_t last_compressor_speed_increase = 0;
+          static uint32_t last_compressor_speed_change = 0;
+          static int last_direction = 0; // 1 for increase, -1 for decrease, 0 for first run
 
           if(id(manual_override).state) {
             ESP_LOGW("update_cooling", "Manual override is on, skipping automatic speed update.");
@@ -760,25 +739,16 @@ script:
             next_compressor_speed = 5;
           } else {
             // Figure out speed based on delta to targets
-            if (freezer_temp_delta_low > 0.2) {
+            if (freezer_temp_delta_low > 0.3) {
               next_compressor_speed = 5;
-            } else if (freezer_temp_delta_low > 0) {
+            } else if (freezer_temp_delta_low > 0.2) {
+              next_compressor_speed = 4;
+            } else if (freezer_temp_delta_low > 0.1) {
               next_compressor_speed = 3;
-            } else {
+            } else if (freezer_temp_delta_low > 0) {
               next_compressor_speed = 2;
-            }
-
-            // Boost speed if we're not making progress.
-            if (next_compressor_speed <= id(compressor).speed &&
-                next_compressor_speed < 5 &&
-                millis() - last_compressor_speed_increase > ${stall_detection_delay_s} * 1000 &&
-                (cool_freezer && id(freezer_temp_delayed).state <= id(freezer_temp).state) && 
-                id(compressor_on_time).state > ${stall_detection_delay_s}) {
-              ++next_compressor_speed;
-              ESP_LOGI("update_cooling", "Freezer cooling stalled! Increasing speed to %.0fRPM. (Old %.1f°C <= Cur %.1f°C)",
-                       id(compressor_rpm).state + 500,
-                       id(freezer_temp_delayed).state,
-                       id(freezer_temp).state);
+            } else {
+              next_compressor_speed = 1;
             }
           }
 
@@ -794,10 +764,34 @@ script:
             ESP_LOGI("update_cooling", "Anti-short-cycle delay active (%.0fs left). Compressor start deferred.", 180 - id(compressor_off_time).state);
           } else {
             if (!id(compressor).state || id(compressor).speed != next_compressor_speed) {
-              if (next_compressor_speed > id(compressor).speed) {
-                last_compressor_speed_increase = millis();
+              const uint32_t now = millis();
+              const uint32_t min_interval_ms = id(compressor_speed_change_interval_number).state * 1000;
+              const uint32_t burst_window_ms = ${compressor_speed_change_burst_window_s} * 1000;
+
+              const int current_speed = id(compressor).state ? id(compressor).speed : 0;
+              const int direction = (next_compressor_speed > current_speed) ? 1 : -1;
+
+              bool allow_change = false;
+              if (last_compressor_speed_change == 0) {
+                allow_change = true;
+              } else {
+                const uint32_t elapsed = now - last_compressor_speed_change;
+                if (elapsed >= min_interval_ms) {
+                  allow_change = true;
+                } else if (direction == last_direction && elapsed < burst_window_ms) {
+                  ESP_LOGI("update_cooling", "Compressor speed burst allowed (same direction within %us).", ${compressor_speed_change_burst_window_s});
+                  allow_change = true;
+                }
               }
 
+              if (!allow_change) {
+                 ESP_LOGI("update_cooling", "Compressor speed change deferred (last change %u ms ago, min interval %u ms).", 
+                          now - last_compressor_speed_change, min_interval_ms);
+                 return;
+              }
+
+              last_compressor_speed_change = now;
+              last_direction = direction;
               auto call = id(compressor).turn_on();
               call.set_speed(next_compressor_speed);
               call.perform();

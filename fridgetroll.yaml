@@ -7,6 +7,8 @@ substitutions:
   max_fridge_fan_speed: 75
   # Exception window for speed changes in the same direction.
   compressor_speed_change_burst_window_s: 15
+  # Anti-short-cycle delay for the compressor.
+  compressor_anti_short_cycle_s: 180
 
   # Pins for S3 Mini
   one_wire_bus_pin: GPIO11
@@ -436,7 +438,7 @@ number:
     optimistic: true
     min_value: 0
     max_value: 600
-    initial_value: 60
+    initial_value: 90
     step: 1
     unit_of_measurement: "s"
     restore_value: true
@@ -683,7 +685,7 @@ script:
     then:
       - delay: 3.5min
       - logger.log:
-          tag: freezer_watchdgo
+          tag: freezer_watchdog
           level: ERROR
           format: "Too long since last freezer watchdog pet!"
       - if:
@@ -696,7 +698,8 @@ script:
     then:
       - lambda: |-
           static uint32_t last_compressor_speed_change = 0;
-          static int last_direction = 0; // 1 for increase, -1 for decrease, 0 for first run
+          enum class Direction { NONE, INCREASE, DECREASE };
+          static Direction last_direction = Direction::NONE;
 
           if(id(manual_override).state) {
             ESP_LOGW("update_cooling", "Manual override is on, skipping automatic speed update.");
@@ -734,22 +737,16 @@ script:
           if (id(compressor_on_time).state < ${blast_compressor_for_s}) {
             // Always start compressor at max.
             next_compressor_speed = 5;
-          } else if (freezer_temp_delta_low > 1.5) {
-            // Blast the freezer.
+          } else if (freezer_temp_delta_low > 0.6) {
             next_compressor_speed = 5;
+          } else if (freezer_temp_delta_low > 0.4) {
+            next_compressor_speed = 4;
+          } else if (freezer_temp_delta_low > 0.2) {
+            next_compressor_speed = 3;
+          } else if (freezer_temp_delta_low > 0) {
+            next_compressor_speed = 2;
           } else {
-            // Figure out speed based on delta to targets
-            if (freezer_temp_delta_low > 0.3) {
-              next_compressor_speed = 5;
-            } else if (freezer_temp_delta_low > 0.2) {
-              next_compressor_speed = 4;
-            } else if (freezer_temp_delta_low > 0.1) {
-              next_compressor_speed = 3;
-            } else if (freezer_temp_delta_low > 0) {
-              next_compressor_speed = 2;
-            } else {
-              next_compressor_speed = 1;
-            }
+            next_compressor_speed = 1;
           }
 
           // Turn on the fridge fan opportunistically.
@@ -759,45 +756,47 @@ script:
             fridge_fan_on = true;
           }
 
-          // Check if the compressor needs an anti-short-cycle delay (180 seconds)
-          if (!id(compressor).state && id(compressor_off_time).state < 180) {
-            ESP_LOGI("update_cooling", "Anti-short-cycle delay active (%.0fs left). Compressor start deferred.", 180 - id(compressor_off_time).state);
-          } else {
-            if (!id(compressor).state || id(compressor).speed != next_compressor_speed) {
-              const uint32_t now = millis();
-              const uint32_t min_interval_ms = id(compressor_speed_change_interval_number).state * 1000;
-              const uint32_t burst_window_ms = ${compressor_speed_change_burst_window_s} * 1000;
+          // Check if the compressor needs an anti-short-cycle delay.
+          if (!id(compressor).state && id(compressor_off_time).state < ${compressor_anti_short_cycle_s}) {
+            ESP_LOGI("update_cooling", "Anti-short-cycle active (%.0fs left).", ${compressor_anti_short_cycle_s} - id(compressor_off_time).state);
+          } else if (!id(compressor).state || id(compressor).speed != next_compressor_speed) {
+            // Check if the compressor speed change is allowed.
+            const uint32_t now = millis();
+            const uint32_t min_interval_ms = id(compressor_speed_change_interval_number).state * 1000;
+            const uint32_t burst_window_ms = ${compressor_speed_change_burst_window_s} * 1000;
 
-              const int current_speed = id(compressor).state ? id(compressor).speed : 0;
-              const int direction = (next_compressor_speed > current_speed) ? 1 : -1;
+            const int current_speed = id(compressor).state ? id(compressor).speed : 0;
+            const Direction direction = (next_compressor_speed > current_speed) ? Direction::INCREASE : Direction::DECREASE;
 
-              bool allow_change = false;
-              if (last_compressor_speed_change == 0) {
+            bool allow_change = false;
+            if (last_direction == Direction::NONE) {
+              allow_change = true;
+            } else {
+              const uint32_t elapsed = now - last_compressor_speed_change;
+              if (elapsed >= min_interval_ms) {
                 allow_change = true;
-              } else {
-                const uint32_t elapsed = now - last_compressor_speed_change;
-                if (elapsed >= min_interval_ms) {
-                  allow_change = true;
-                } else if (direction == last_direction && elapsed < burst_window_ms) {
-                  ESP_LOGI("update_cooling", "Compressor speed burst allowed (same direction within %us).", ${compressor_speed_change_burst_window_s});
-                  allow_change = true;
-                }
+              } else if (direction == last_direction && elapsed < burst_window_ms) {
+                ESP_LOGI("update_cooling", "Compressor speed burst allowed (same direction within %us).", ${compressor_speed_change_burst_window_s});
+                allow_change = true;
               }
-
-              if (!allow_change) {
-                 ESP_LOGI("update_cooling", "Compressor speed change deferred (last change %u ms ago, min interval %u ms).", 
-                          now - last_compressor_speed_change, min_interval_ms);
-                 return;
-              }
-
-              last_compressor_speed_change = now;
-              last_direction = direction;
-              auto call = id(compressor).turn_on();
-              call.set_speed(next_compressor_speed);
-              call.perform();
             }
+
+            if (!allow_change) {
+               ESP_LOGI("update_cooling", "Compressor speed change deferred (last change %u ms ago, min interval %u ms).", 
+                        now - last_compressor_speed_change, min_interval_ms);
+               return;
+            }
+
+            // Change the compressor speed.
+            last_compressor_speed_change = now;
+            last_direction = direction;
+            ESP_LOGI("update_cooling", "Changing compressor speed from %d to %d.", current_speed, next_compressor_speed);
+            auto call = id(compressor).turn_on();
+            call.set_speed(next_compressor_speed);
+            call.perform();
           }
 
+          // Control fan as necessary.
           if (id(fridge_fan).state != fridge_fan_on || id(fridge_fan).speed != ${max_fridge_fan_speed}) {
             if (fridge_fan_on) {
               auto call = id(fridge_fan).turn_on();
@@ -815,66 +814,33 @@ script:
       - udp.write:
           id: influxdb_udp
           data: !lambda |-
-            std::string payload = "fridgetroll,host=${name}";
-            char buf[64];
+            char rpt[512];
+            int len = snprintf(rpt, sizeof(rpt), "fridgetroll,host=${name} door_closed=%c,uptime=%u",
+                               id(door_closed).state ? 'T' : 'F', (uint32_t)id(sys_uptime).state);
 
-            snprintf(buf, sizeof(buf), " door_closed=%c", id(door_closed).state ? 'T' : 'F');
-            payload += buf;
+            auto add_val = [&](const char* name, float val, const char* fmt = ",%s=%.4g") {
+              if (!std::isnan(val)) len += snprintf(rpt + len, sizeof(rpt) - len, fmt, name, val);
+            };
 
-            snprintf(buf, sizeof(buf), ",uptime=%ui", (uint32_t)id(sys_uptime).state);
-            payload += buf;
+            add_val("fridge_temperature", id(fridge_temp).state);
+            add_val("freezer_temperature", id(freezer_temp).state);
+            add_val("compressor_on_time", id(compressor_on_time).state, ",%s=%u");
+            add_val("compressor_rpm", id(compressor_rpm).state, ",%s=%u");
+            add_val("fridge_target_temp_low", id(fridge_thermostat).target_temperature_low);
+            add_val("fridge_target_temp_high", id(fridge_thermostat).target_temperature_high);
+            add_val("freezer_target_temp_low", id(freezer_thermostat).target_temperature_low);
+            add_val("freezer_target_temp_high", id(freezer_thermostat).target_temperature_high);
+            add_val("compressor_temperature", id(compressor_temp).state);
+            add_val("ambient_temperature", id(ambient_temp).state);
+            add_val("fan_speed", id(compressor_fan_rpm).state);
 
-            if (!std::isnan(id(fridge_temp).state)) {
-              snprintf(buf, sizeof(buf), ",fridge_temperature=%.4g", id(fridge_temp).state);
-              payload += buf;
-            }
-            if (!std::isnan(id(freezer_temp).state)) {
-              snprintf(buf, sizeof(buf), ",freezer_temperature=%.4g", id(freezer_temp).state);
-              payload += buf;
-            }
-
-            snprintf(buf, sizeof(buf), ",compressor_on_time=%ui", (uint32_t)id(compressor_on_time).state);
-            payload += buf;
-
-            if (!std::isnan(id(compressor_rpm).state)) {
-              snprintf(buf, sizeof(buf), ",compressor_rpm=%ui", (uint32_t)id(compressor_rpm).state);
-              payload += buf;
-            }
-            if (!std::isnan(id(fridge_thermostat).target_temperature_low)) {
-              snprintf(buf, sizeof(buf), ",fridge_target_temp_low=%.4g", id(fridge_thermostat).target_temperature_low);
-              payload += buf;
-            }
-            if (!std::isnan(id(fridge_thermostat).target_temperature_high)) {
-              snprintf(buf, sizeof(buf), ",fridge_target_temp_high=%.4g", id(fridge_thermostat).target_temperature_high);
-              payload += buf;
-            }
-            if (!std::isnan(id(freezer_thermostat).target_temperature_low)) {
-              snprintf(buf, sizeof(buf), ",freezer_target_temp_low=%.4g", id(freezer_thermostat).target_temperature_low);
-              payload += buf;
-            }
-            if (!std::isnan(id(freezer_thermostat).target_temperature_high)) {
-              snprintf(buf, sizeof(buf), ",freezer_target_temp_high=%.4g", id(freezer_thermostat).target_temperature_high);
-              payload += buf;
-            }
-            if (!std::isnan(id(compressor_temp).state)) {
-              snprintf(buf, sizeof(buf), ",compressor_temperature=%.4g", id(compressor_temp).state);
-              payload += buf;
-            }
-            if (!std::isnan(id(ambient_temp).state)) {
-              snprintf(buf, sizeof(buf), ",ambient_temperature=%.4g", id(ambient_temp).state);
-              payload += buf;
-            }
-            if (!std::isnan(id(compressor_fan_rpm).state)) {
-              snprintf(buf, sizeof(buf), ",fan_speed=%.4g", id(compressor_fan_rpm).state);
-              payload += buf;
-            }
-            if (!id(fridge_fan).state || !std::isnan(id(fridge_fan).speed)) {
-              snprintf(buf, sizeof(buf), ",fridge_fan_speed=%d", id(fridge_fan).state ? id(fridge_fan).speed : 0);
-              payload += buf;
+            if (id(fridge_fan).state || !std::isnan(id(fridge_fan).speed)) {
+              len += snprintf(rpt + len, sizeof(rpt) - len, ",fridge_fan_speed=%d", 
+                              id(fridge_fan).state ? (int)id(fridge_fan).speed : 0);
             }
 
-            ESP_LOGD("report_stats", "Sending stats via UDP: %s", payload.c_str());
-            return std::vector<uint8_t>(payload.begin(), payload.end());
+            ESP_LOGD("report_stats", "UDP: %s", rpt);
+            return std::vector<uint8_t>(rpt, rpt + len);
 
 interval:
   # Update our temperature values in series with a short delay in between.

@@ -73,9 +73,15 @@ web_server:
     - id: "environment"
       name: "Environment"
       sorting_weight: 10
+    - id: "sensor_settings"
+      name: "Sensor Configuration"
+      sorting_weight: 15
     - id: "settings"
       name: "Settings"
       sorting_weight: 20
+    - id: "udp_settings"
+      name: "UDP Configuration (Restart Required)"
+      sorting_weight: 25
     - id: "compressor_stats"
       name: "Compressor Stats"
       sorting_weight: 30
@@ -337,7 +343,7 @@ text:
     restore_value: true
     entity_category: "config"
     web_server:
-      sorting_group_id: "settings"
+      sorting_group_id: "sensor_settings"
     on_value:
       - script.execute: apply_sensor_addresses
 
@@ -352,7 +358,7 @@ text:
     restore_value: true
     entity_category: "config"
     web_server:
-      sorting_group_id: "settings"
+      sorting_group_id: "sensor_settings"
     on_value:
       - script.execute: apply_sensor_addresses
 
@@ -367,7 +373,7 @@ text:
     restore_value: true
     entity_category: "config"
     web_server:
-      sorting_group_id: "settings"
+      sorting_group_id: "sensor_settings"
     on_value:
       - script.execute: apply_sensor_addresses
 
@@ -382,7 +388,7 @@ text:
     restore_value: true
     entity_category: "config"
     web_server:
-      sorting_group_id: "settings"
+      sorting_group_id: "sensor_settings"
     on_value:
       - script.execute: apply_sensor_addresses
 
@@ -397,7 +403,7 @@ text:
     restore_value: true
     entity_category: "config"
     web_server:
-      sorting_group_id: "settings"
+      sorting_group_id: "udp_settings"
 
   - platform: template
     mode: text
@@ -410,7 +416,7 @@ text:
     restore_value: true
     entity_category: "config"
     web_server:
-      sorting_group_id: "settings"
+      sorting_group_id: "udp_settings"
 
 number:
   - platform: template
@@ -425,7 +431,7 @@ number:
     restore_value: true
     entity_category: "config"
     web_server:
-      sorting_group_id: "settings"
+      sorting_group_id: "udp_settings"
 
   - platform: template
     name: "InfluxDB Port"
@@ -439,7 +445,7 @@ number:
     restore_value: true
     entity_category: "config"
     web_server:
-      sorting_group_id: "settings"
+      sorting_group_id: "udp_settings"
 
   - platform: template
     name: "Compressor Speed Min Interval"

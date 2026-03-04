@@ -778,8 +778,8 @@ script:
             }
 
             if (!allow_change) {
-               ESP_LOGI("update_cooling", "Compressor speed change deferred (last change %u ms ago, min interval %u ms).", 
-                        now - last_compressor_speed_change, min_interval_ms);
+               ESP_LOGI("update_cooling", "Compressor speed change deferred (last change %us ago, min interval %us).", 
+                        (now - last_compressor_speed_change) / 1000, min_interval_ms / 1000);
                return;
             }
 

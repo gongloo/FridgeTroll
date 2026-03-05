@@ -587,10 +587,12 @@ climate:
 
     idle_action:
       then:
+        - fan.turn_off: fridge_fan
     cool_action:
       then:
-    on_control:
-      - script.execute: update_cooling
+        - fan.turn_on:
+            id: fridge_fan
+            speed: ${max_fridge_fan_speed}
 
   - platform: bang_bang
     name: "Freezer Thermostat"
@@ -615,7 +617,7 @@ climate:
     cool_action:
       then:
     on_control:
-      - script.execute: update_cooling
+      - script.execute: update_compressor
 
 button:
   - platform: template
@@ -690,7 +692,7 @@ script:
           then:
             - button.press: restart_button
 
-  - id: update_cooling
+  - id: update_compressor
     then:
       - lambda: |-
           static uint32_t last_compressor_speed_change = 0;
@@ -698,36 +700,23 @@ script:
           static Direction last_direction = Direction::NONE;
 
           if(id(manual_override).state) {
-            ESP_LOGW("update_cooling", "Manual override is on, skipping automatic speed update.");
+            ESP_LOGW("update_compressor", "Manual override is on, skipping automatic speed update.");
             return;
           }
 
-          const bool cool_fridge = id(fridge_thermostat).action == CLIMATE_ACTION_COOLING;
           const bool cool_freezer = id(freezer_thermostat).action == CLIMATE_ACTION_COOLING;
 
-          if (!cool_fridge && !cool_freezer) {
+          if (!cool_freezer) {
             if (id(compressor).state) {
               id(compressor).turn_off().perform();
             }
-            if (id(fridge_fan).state) {
-              id(fridge_fan).turn_off().perform();
-            }
             return;
           }
 
-          bool fridge_fan_on = false;
           auto next_compressor_speed = std::max(id(compressor).speed, 1);
 
           const float freezer_temp_delta_low =
               id(freezer_temp).state - id(freezer_thermostat).target_temperature_low;
-          const float fridge_temp_delta_low =
-              id(fridge_temp).state - id(fridge_thermostat).target_temperature_low;
-
-          if (cool_fridge) {
-            fridge_fan_on=true;
-          } else if (id(fridge_fan).state) {
-            fridge_fan_on=false;
-          }
 
           id(compressor_on_time).update();
           if (id(compressor_on_time).state < ${blast_compressor_for_s}) {
@@ -739,22 +728,15 @@ script:
             next_compressor_speed = 4;
           } else if (freezer_temp_delta_low > 0.2) {
             next_compressor_speed = 3;
-          } else if (freezer_temp_delta_low > 0) {
+          } else if (freezer_temp_delta_low > 0.1) {
             next_compressor_speed = 2;
           } else {
             next_compressor_speed = 1;
           }
 
-          // Turn on the fridge fan opportunistically.
-          if (next_compressor_speed > 0 &&
-              fridge_temp_delta_low > 0.25 &&
-              id(freezer_temp).state < id(freezer_thermostat).target_temperature_high - 0.5) {
-            fridge_fan_on = true;
-          }
-
           // Check if the compressor needs an anti-short-cycle delay.
           if (!id(compressor).state && id(compressor_off_time).state < ${compressor_anti_short_cycle_s}) {
-            ESP_LOGI("update_cooling", "Anti-short-cycle active (%.0fs left).", ${compressor_anti_short_cycle_s} - id(compressor_off_time).state);
+            ESP_LOGI("update_compressor", "Anti-short-cycle active (%.0fs left).", ${compressor_anti_short_cycle_s} - id(compressor_off_time).state);
           } else if (!id(compressor).state || id(compressor).speed != next_compressor_speed) {
             // Check if the compressor speed change is allowed.
             const uint32_t now = millis();
@@ -772,13 +754,13 @@ script:
               if (elapsed >= min_interval_ms) {
                 allow_change = true;
               } else if (direction == last_direction && elapsed < burst_window_ms) {
-                ESP_LOGI("update_cooling", "Compressor speed burst allowed (same direction within %us).", ${compressor_speed_change_burst_window_s});
+                ESP_LOGI("update_compressor", "Compressor speed burst allowed (same direction within %us).", ${compressor_speed_change_burst_window_s});
                 allow_change = true;
               }
             }
 
             if (!allow_change) {
-               ESP_LOGI("update_cooling", "Compressor speed change deferred (last change %us ago, min interval %us).", 
+               ESP_LOGI("update_compressor", "Compressor speed change deferred (last change %us ago, min interval %us).", 
                         (now - last_compressor_speed_change) / 1000, min_interval_ms / 1000);
                return;
             }
@@ -786,21 +768,10 @@ script:
             // Change the compressor speed.
             last_compressor_speed_change = now;
             last_direction = direction;
-            ESP_LOGI("update_cooling", "Changing compressor speed from %d to %d.", current_speed, next_compressor_speed);
+            ESP_LOGI("update_compressor", "Changing compressor speed from %d to %d.", current_speed, next_compressor_speed);
             auto call = id(compressor).turn_on();
             call.set_speed(next_compressor_speed);
             call.perform();
-          }
-
-          // Control fan as necessary.
-          if (id(fridge_fan).state != fridge_fan_on || id(fridge_fan).speed != ${max_fridge_fan_speed}) {
-            if (fridge_fan_on) {
-              auto call = id(fridge_fan).turn_on();
-              call.set_speed(${max_fridge_fan_speed});
-              call.perform();
-            } else {
-              id(fridge_fan).turn_off().perform();
-            }
           }
 
   - id: report_stats
@@ -854,5 +825,5 @@ interval:
       - component.update: ambient_temp
       - delay: 1s
       - component.update: compressor_temp
-      - script.execute: update_cooling
+      - script.execute: update_compressor
       - script.execute: report_stats

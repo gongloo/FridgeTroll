@@ -5,8 +5,8 @@ substitutions:
   blast_compressor_for_s: 60
   # Max speed for the fridge fan as a percentage.
   max_fridge_fan_speed: 75
-  # Exception window for speed changes in the same direction.
-  compressor_speed_change_burst_window_s: 15
+  # Emergency absolute delta (degrees C) above target to trigger max speed
+  compressor_emergency_delta: 1.0
   # Anti-short-cycle delay for the compressor.
   compressor_anti_short_cycle_s: 180
 
@@ -159,6 +159,16 @@ sensor:
     web_server:
       sorting_group_id: "host"
 
+  - platform: template
+    name: "Measured Recovery Time"
+    id: compressor_recovery_time_measured_sensor
+    icon: "mdi:timer-sand"
+    unit_of_measurement: "h"
+    accuracy_decimals: 2
+    entity_category: "diagnostic"
+    web_server:
+      sorting_group_id: "environment"
+
   - platform: dallas_temp
     name: "Fridge Temperature"
     icon: "mdi:water-thermometer"
@@ -244,6 +254,24 @@ sensor:
       web_server:
         sorting_group_id: "compressor_stats"
       accuracy_decimals: 0
+
+  - platform: template
+    name: "Freezer Temperature Delta"
+    id: freezer_temp_delta_per_hour
+    unit_of_measurement: "°C/h"
+    accuracy_decimals: 2
+    icon: "mdi:chart-bell-curve"
+    web_server:
+      sorting_group_id: "environment"
+
+  - platform: template
+    name: "Desired Freezer Delta"
+    id: freezer_temp_delta_per_hour_desired
+    unit_of_measurement: "°C/h"
+    accuracy_decimals: 2
+    icon: "mdi:chart-bell-curve-cumulative"
+    web_server:
+      sorting_group_id: "environment"
 
   - platform: duty_time
     id: door_open_time
@@ -462,6 +490,51 @@ number:
     web_server:
       sorting_group_id: "settings"
 
+  - platform: template
+    name: "Target Recovery Time"
+    id: compressor_recovery_time_number
+    icon: "mdi:clock-fast"
+    unit_of_measurement: "h"
+    optimistic: true
+    min_value: 0.1
+    max_value: 5.0
+    initial_value: 1.0
+    step: 0.1
+    restore_value: true
+    entity_category: "config"
+    web_server:
+      sorting_group_id: "settings"
+
+  - platform: template
+    name: "Recovery Evaluation Window"
+    id: compressor_window_number
+    icon: "mdi:history"
+    unit_of_measurement: "s"
+    optimistic: true
+    min_value: 30
+    max_value: 300
+    initial_value: 60
+    step: 10
+    restore_value: true
+    entity_category: "config"
+    web_server:
+      sorting_group_id: "settings"
+
+  - platform: template
+    name: "Recovery Tolerance"
+    id: compressor_recovery_tolerance_number
+    icon: "mdi:plus-minus-box"
+    unit_of_measurement: "°C/h"
+    optimistic: true
+    min_value: 0.1
+    max_value: 5.0
+    initial_value: 1.0
+    step: 0.1
+    restore_value: true
+    entity_category: "config"
+    web_server:
+      sorting_group_id: "settings"
+
 switch:
   - platform: template
     name: "Manual Override"
@@ -551,22 +624,23 @@ fan:
     web_server:
       sorting_group_id: "command"
     speed_count: 5
-    restore_mode: RESTORE_DEFAULT_OFF
+    restore_mode: ALWAYS_OFF
     on_turn_on:
+      - lambda: |-
+          id(compressor_rpm).publish_state((id(compressor).speed - 1) * 500 + 2000);
       - output.turn_on: compressor_enable_output
       - sensor.duty_time.reset: compressor_on_time
       - component.update: compressor_off_time
       - sensor.duty_time.reset: compressor_off_time
-      - lambda: |-
-          id(compressor_rpm).publish_state((id(compressor).speed - 1) * 500 + 2000);
     on_turn_off:
       - output.turn_off: compressor_enable_output
       - component.update: compressor_on_time
       - sensor.duty_time.reset: compressor_on_time
       - sensor.duty_time.reset: compressor_off_time
+      - lambda: id(compressor_rpm).publish_state(0);
     on_speed_set:
       - lambda: |-
-          id(compressor_rpm).publish_state((id(compressor).speed - 1) * 500 + 2000);
+          id(compressor_rpm).publish_state(id(compressor).state ? (id(compressor).speed - 1) * 500 + 2000 : 0);
 
 climate:
   - platform: bang_bang
@@ -594,7 +668,7 @@ climate:
             id: fridge_fan
             speed: ${max_fridge_fan_speed}
 
-  - platform: bang_bang
+  - platform: thermostat
     name: "Freezer Thermostat"
     id: freezer_thermostat
     sensor: freezer_temp
@@ -602,20 +676,28 @@ climate:
     web_server:
       sorting_group_id: "settings"
 
-    # Note the freezer should typically be much colder than this.
-    # Setting these too low might cause the fridge to get too cold!
-    default_target_temperature_low: -15
-    default_target_temperature_high: -9.5
+    preset:
+      - name: Standard
+        default_target_temperature_high: -17.5
+      - name: Deep Freeze
+        default_target_temperature_high: -20
+    default_preset: Standard
+
+    cool_overrun: 1.0
+    cool_deadband: 0.0
+
+    min_idle_time: 0s
+    min_cooling_off_time: ${compressor_anti_short_cycle_s}s
+    min_cooling_run_time: ${compressor_anti_short_cycle_s}s
 
     visual:
-      min_temperature: -18
-      max_temperature: -7
+      min_temperature: -20
+      max_temperature: -10
       temperature_step: 0.5
 
-    idle_action:
-      then:
-    cool_action:
-      then:
+    idle_action: []
+    cool_action: []
+
     on_control:
       - script.execute: update_compressor
 
@@ -696,79 +778,139 @@ script:
     then:
       - lambda: |-
           static uint32_t last_compressor_speed_change = 0;
-          enum class Direction { NONE, INCREASE, DECREASE };
-          static Direction last_direction = Direction::NONE;
+
+          // Sliding window state
+          static std::deque<float> temp_history;
+          static uint32_t last_eval_time = 0;
+          const uint32_t kEvalIntervalMs = ${temp_update_interval_s} * 1000;
+          const float window_s = id(compressor_window_number).state;
+          const size_t history_limit = static_cast<size_t>(window_s / ${temp_update_interval_s}) + 1;
 
           if(id(manual_override).state) {
             ESP_LOGW("update_compressor", "Manual override is on, skipping automatic speed update.");
             return;
           }
 
-          const bool cool_freezer = id(freezer_thermostat).action == CLIMATE_ACTION_COOLING;
-
-          if (!cool_freezer) {
-            if (id(compressor).state) {
-              id(compressor).turn_off().perform();
-            }
+          const float current_temp = id(freezer_temp).state;
+          if (std::isnan(current_temp)) {
+            ESP_LOGE("update_compressor", "Freezer temperature is NaN, skipping automatic speed update.");
             return;
           }
 
-          auto next_compressor_speed = std::max(id(compressor).speed, 1);
+          static uint32_t recovery_start_ms = 0;
+          static float max_error = NAN;
 
-          const float freezer_temp_delta_low =
-              id(freezer_temp).state - id(freezer_thermostat).target_temperature_low;
+          const float target_temp = id(freezer_thermostat).target_temperature;
+          const float error = current_temp - target_temp;
+
+          // If the thermostat itself is turned completely off or is satisfied
+          if (id(freezer_thermostat).action != climate::CLIMATE_ACTION_COOLING) {
+            if (id(compressor).state) id(compressor).turn_off().perform();
+            id(freezer_temp_delta_per_hour_desired).publish_state(0);
+            temp_history.clear(); // Fresh start when we kick back on
+            max_error = NAN;
+            return;
+          } else if (std::isnan(max_error) && error > 0.0f) {
+            recovery_start_ms = millis();
+            max_error = error;
+          }
+
+          // Track the maximum error reached during this cooling cycle
+          max_error = std::max(max_error, error);
+
+          // If we've reached our target temp.
+          if (current_temp <= target_temp && !std::isnan(max_error)) {
+            const float elapsed_hours = (millis() - recovery_start_ms) / 3600000.0f;
+            if (elapsed_hours > 0.05f && max_error > 0.5f) {
+                id(compressor_recovery_time_measured_sensor).publish_state(elapsed_hours);
+                ESP_LOGI("recovery_profiler", "Cooling cycle complete. Took %.2f hours. Max error was %.2f°C.", elapsed_hours, max_error);
+            }
+            max_error = NAN;
+          }
+
+          // Update evaluation timing
+          const uint32_t now = millis();
+          // Subtract 200ms to allow for minor ESPHome interval jitter
+          if (temp_history.empty() || now - last_eval_time >= kEvalIntervalMs - 200) {
+            temp_history.push_back(current_temp);
+            while (temp_history.size() > history_limit) temp_history.pop_front();
+            last_eval_time = now;
+            
+            // Log the full history state for debugging.
+            std::string history_str;
+            history_str.reserve(128);
+            char h_buf[16];
+            for (float t : temp_history) {
+              if (!history_str.empty()) history_str += ", ";
+              int n = snprintf(h_buf, sizeof(h_buf), "%.2f", t);
+              if (n > 0 && n < (int)sizeof(h_buf)) history_str.append(h_buf, n);
+            }
+            ESP_LOGD("update_compressor", "Temp history: [%s]", history_str.c_str());
+          }
+
+          const int current_speed = id(compressor).state ? id(compressor).speed : 0;
+          auto next_compressor_speed = std::max(current_speed, 1);
+
+          bool emergency_override = false;
+          const float current_delta_per_hour = (temp_history.size() >= history_limit) ? (current_temp - temp_history.front()) * (3600.0f / window_s) : NAN;
+          const float desired_delta_per_hour = (temp_history.size() >= history_limit) ? -error / id(compressor_recovery_time_number).state : NAN;
+          id(freezer_temp_delta_per_hour).publish_state(current_delta_per_hour);
+          id(freezer_temp_delta_per_hour_desired).publish_state(desired_delta_per_hour);
 
           id(compressor_on_time).update();
           if (id(compressor_on_time).state < ${blast_compressor_for_s}) {
             // Always start compressor at max.
             next_compressor_speed = 5;
-          } else if (freezer_temp_delta_low > 0.8) {
+          } else if (current_temp >= target_temp + ${compressor_emergency_delta}) {
+            // Absolute threshold bypass: jump to max speed
             next_compressor_speed = 5;
-          } else if (freezer_temp_delta_low > 0.6) {
-            next_compressor_speed = 4;
-          } else if (freezer_temp_delta_low > 0.4) {
-            next_compressor_speed = 3;
-          } else if (freezer_temp_delta_low > 0.2) {
-            next_compressor_speed = 2;
-          } else {
+            emergency_override = true;
+          } else if (current_temp <= target_temp) {
+            // Reached ideal target, float at minimum speed
             next_compressor_speed = 1;
+          } else if (temp_history.size() >= history_limit) {
+            // Only use dynamic evaluation once history is fully populated
+            const float tolerance = id(compressor_recovery_tolerance_number).state;
+            if (current_delta_per_hour > desired_delta_per_hour + tolerance) {
+              next_compressor_speed = std::min(current_speed + 1, 5);
+            } else if (current_delta_per_hour < desired_delta_per_hour - tolerance) {
+              next_compressor_speed = std::max(current_speed - 1, 1);
+            }
           }
 
+          id(compressor_off_time).update();
           // Check if the compressor needs an anti-short-cycle delay.
           if (!id(compressor).state && id(compressor_off_time).state < ${compressor_anti_short_cycle_s}) {
             ESP_LOGI("update_compressor", "Anti-short-cycle active (%.0fs left).", ${compressor_anti_short_cycle_s} - id(compressor_off_time).state);
           } else if (!id(compressor).state || id(compressor).speed != next_compressor_speed) {
             // Check if the compressor speed change is allowed.
-            const uint32_t now = millis();
             const uint32_t min_interval_ms = id(compressor_speed_change_interval_number).state * 1000;
-            const uint32_t burst_window_ms = ${compressor_speed_change_burst_window_s} * 1000;
-
-            const int current_speed = id(compressor).state ? id(compressor).speed : 0;
-            const Direction direction = (next_compressor_speed > current_speed) ? Direction::INCREASE : Direction::DECREASE;
-
+            const int current_speed = id(compressor).speed;
+            
             bool allow_change = false;
-            if (last_direction == Direction::NONE) {
-              allow_change = true;
-            } else {
-              const uint32_t elapsed = now - last_compressor_speed_change;
-              if (elapsed >= min_interval_ms) {
-                allow_change = true;
-              } else if (direction == last_direction && elapsed < burst_window_ms) {
-                ESP_LOGI("update_compressor", "Compressor speed burst allowed (same direction within %us).", ${compressor_speed_change_burst_window_s});
-                allow_change = true;
-              }
+            if (emergency_override) {
+              allow_change = true; // Emergency bypasses interval checks
+            } else if (!id(compressor).state) {
+              allow_change = true; // Still governed by the anti-short-cycle delay above
+            } else if (now - last_compressor_speed_change >= min_interval_ms) {
+              allow_change = true; // Strict minimum time has passed
             }
 
             if (!allow_change) {
-               ESP_LOGI("update_compressor", "Compressor speed change deferred (last change %us ago, min interval %us).", 
+               ESP_LOGD("update_compressor", "Compressor speed change deferred (last change %us ago, min interval %us).", 
                         (now - last_compressor_speed_change) / 1000, min_interval_ms / 1000);
                return;
             }
 
             // Change the compressor speed.
             last_compressor_speed_change = now;
-            last_direction = direction;
-            ESP_LOGI("update_compressor", "Changing compressor speed from %d to %d.", current_speed, next_compressor_speed);
+            if (!std::isnan(current_delta_per_hour)) {
+              ESP_LOGI("update_compressor", "Changing compressor speed from %d to %d (delta: %.2f°C/h).", 
+                       current_speed, next_compressor_speed, current_delta_per_hour);
+            } else {
+              ESP_LOGI("update_compressor", "Changing compressor speed from %d to %d (emergency override: %s).", 
+                       current_speed, next_compressor_speed, emergency_override ? "yes" : "no");
+            }
             auto call = id(compressor).turn_on();
             call.set_speed(next_compressor_speed);
             call.perform();
@@ -776,20 +918,31 @@ script:
 
   - id: report_stats
     then:
-      #- influxdb.publish_batch:
-      #    - full_dump
       - udp.write:
           id: influxdb_udp
           data: !lambda |-
-            char rpt[512];
-            int len = snprintf(rpt, sizeof(rpt), "fridgetroll,host=${name} door_closed=%c",
-                               id(door_closed).state ? 'T' : 'F');
+            std::string rpt;
+            rpt.reserve(1024);
+            rpt = "fridgetroll,host=${name} door_closed=";
+            rpt += (id(door_closed).state ? 'T' : 'F');
+
+            char buf[32];
 
             auto add_val = [&](const char* name, float val) {
-              if (!std::isnan(val)) len += snprintf(rpt + len, sizeof(rpt) - len, ",%s=%.4g", name, val);
+              if (std::isnan(val)) return;
+              rpt += ",";
+              rpt += name;
+              rpt += "=";
+              int n = snprintf(buf, sizeof(buf), "%.4g", val);
+              if (n > 0 && n < (int)sizeof(buf)) rpt.append(buf, n);
             };
-            auto add_int = [&](const char* name, float val) {
-              if (!std::isnan(val)) len += snprintf(rpt + len, sizeof(rpt) - len, ",%s=%ui", name, (uint32_t)val);
+
+            auto add_int = [&](const char* name, uint32_t val) {
+              rpt += ",";
+              rpt += name;
+              rpt += "=";
+              int n = snprintf(buf, sizeof(buf), "%ui", val);
+              if (n > 0 && n < (int)sizeof(buf)) rpt.append(buf, n);
             };
 
             add_int("uptime", id(sys_uptime).state);
@@ -799,18 +952,27 @@ script:
             add_int("compressor_rpm", id(compressor_rpm).state);
             add_val("fridge_target_temp_low", id(fridge_thermostat).target_temperature_low);
             add_val("fridge_target_temp_high", id(fridge_thermostat).target_temperature_high);
-            add_val("freezer_target_temp_low", id(freezer_thermostat).target_temperature_low);
-            add_val("freezer_target_temp_high", id(freezer_thermostat).target_temperature_high);
+            add_val("freezer_target_temp", id(freezer_thermostat).target_temperature);
+            add_val("freezer_temp_delta", id(freezer_temp_delta_per_hour).state);
+            add_val("freezer_temp_delta_desired", id(freezer_temp_delta_per_hour_desired).state);
             add_val("compressor_temperature", id(compressor_temp).state);
             add_val("ambient_temperature", id(ambient_temp).state);
             add_val("fan_speed", id(compressor_fan_rpm).state);
+            add_val("compressor_recovery_time_target", id(compressor_recovery_time_number).state);
+            add_val("compressor_recovery_time_measured", id(compressor_recovery_time_measured_sensor).state);
+            add_val("compressor_recovery_window", id(compressor_window_number).state);
+            add_val("compressor_recovery_tolerance", id(compressor_recovery_tolerance_number).state);
 
             if (id(fridge_fan).state || !std::isnan(id(fridge_fan).speed)) {
               add_val("fridge_fan_speed", id(fridge_fan).state ? id(fridge_fan).speed : 0.0f);
             }
 
-            ESP_LOGD("report_stats", "UDP: %s", rpt);
-            return std::vector<uint8_t>(rpt, rpt + len);
+            if (rpt.length() > 1400) {
+              ESP_LOGE("report_stats", "Telemetry string too long (%d bytes), potential truncation!", rpt.length());
+            }
+
+            ESP_LOGD("report_stats", "UDP: %s", rpt.c_str());
+            return std::vector<uint8_t>(rpt.begin(), rpt.end());
 
 interval:
   # Update our temperature values in series with a short delay in between.

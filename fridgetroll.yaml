@@ -9,6 +9,8 @@ substitutions:
   compressor_emergency_delta: 1.0
   # Anti-short-cycle delay for the compressor.
   compressor_anti_short_cycle_s: 180
+  # Cooldown time after defrost cooling completes.
+  defrost_cooldown_s: 1800
 
   # Pins for S3 Mini
   one_wire_bus_pin: GPIO11
@@ -113,6 +115,21 @@ time:
   - platform: sntp
     id: sntp_time
     timezone: "America/New_York"
+    on_time:
+      - seconds: 0
+        minutes: 0
+        hours: 3
+        then:
+          - lambda: |-
+              float current_off = (!id(compressor).state && !id(is_defrost_rest)) ? id(compressor_off_time).state : 0;
+              float max_off = std::max(id(max_rest_duration_s), current_off);
+              if (max_off < ${defrost_cooldown_s}) {
+                ESP_LOGI("defrost", "Nightly defrost triggered (max 24h rest was %.0fs, threshold %us).", max_off, ${defrost_cooldown_s});
+                id(defrost_mode).turn_on();
+              } else {
+                ESP_LOGI("defrost", "Nightly defrost skipped (max 24h rest was %.0fs, threshold %us).", max_off, ${defrost_cooldown_s});
+              }
+              id(max_rest_duration_s) = 0;
 
 udp:
   - id: syslog_udp
@@ -446,6 +463,16 @@ text:
     web_server:
       sorting_group_id: "udp_settings"
 
+globals:
+  - id: max_rest_duration_s
+    type: float
+    restore_value: no
+    initial_value: "0.0"
+  - id: is_defrost_rest
+    type: bool
+    restore_value: no
+    initial_value: "false"
+
 number:
   - platform: template
     name: "Syslog Port"
@@ -535,6 +562,21 @@ number:
     web_server:
       sorting_group_id: "settings"
 
+  - platform: template
+    name: "Defrost Target Temperature"
+    id: defrost_target_temp
+    icon: "mdi:thermometer-minus"
+    unit_of_measurement: "°C"
+    optimistic: true
+    min_value: -25
+    max_value: -15
+    initial_value: -21
+    step: 0.5
+    restore_value: true
+    entity_category: "config"
+    web_server:
+      sorting_group_id: "settings"
+
 switch:
   - platform: template
     name: "Manual Override"
@@ -545,6 +587,17 @@ switch:
     entity_category: "diagnostic"
     web_server:
       sorting_group_id: "debug"
+
+  - platform: template
+    name: "Defrost Mode"
+    id: defrost_mode
+    icon: "mdi:snowflake-melt"
+    restore_mode: ALWAYS_OFF
+    optimistic: true
+    web_server:
+      sorting_group_id: "command"
+    on_turn_off:
+      - script.stop: defrost_cooldown_script
 
 binary_sensor:
   - platform: gpio
@@ -626,11 +679,15 @@ fan:
     speed_count: 5
     restore_mode: ALWAYS_OFF
     on_turn_on:
-      - lambda: |-
-          id(compressor_rpm).publish_state((id(compressor).speed - 1) * 500 + 2000);
       - output.turn_on: compressor_enable_output
       - sensor.duty_time.reset: compressor_on_time
       - component.update: compressor_off_time
+      - lambda: |-
+          id(compressor_rpm).publish_state((id(compressor).speed - 1) * 500 + 2000);
+          if (!id(is_defrost_rest)) {
+            id(max_rest_duration_s) = std::max(id(max_rest_duration_s), id(compressor_off_time).state);
+          }
+          id(is_defrost_rest) = false;
       - sensor.duty_time.reset: compressor_off_time
     on_turn_off:
       - output.turn_off: compressor_enable_output
@@ -774,6 +831,11 @@ script:
           then:
             - button.press: restart_button
 
+  - id: defrost_cooldown_script
+    then:
+      - delay: ${defrost_cooldown_s}s
+      - switch.turn_off: defrost_mode
+
   - id: update_compressor
     then:
       - lambda: |-
@@ -788,6 +850,31 @@ script:
 
           if(id(manual_override).state) {
             ESP_LOGW("update_compressor", "Manual override is on, skipping automatic speed update.");
+            return;
+          }
+
+          if (id(defrost_mode).state) {
+            if (id(defrost_cooldown_script).is_running()) {
+              if (id(compressor).state) id(compressor).turn_off().perform();
+              return;
+            }
+
+            if (id(freezer_temp).state <= id(defrost_target_temp).state) {
+              ESP_LOGI("defrost", "Defrost target temperature reached (%.1f°C). Starting cooldown timer (%us).", id(defrost_target_temp).state, ${defrost_cooldown_s});
+              if (id(compressor).state) id(compressor).turn_off().perform();
+              id(is_defrost_rest) = true;
+              id(defrost_cooldown_script).execute();
+              return;
+            }
+
+
+            // Force max speed
+            if (!id(compressor).state || id(compressor).speed != 5) {
+              ESP_LOGD("defrost", "Defrost active: forcing compressor to speed 5");
+              auto call = id(compressor).turn_on();
+              call.set_speed(5);
+              call.perform();
+            }
             return;
           }
 

@@ -121,7 +121,7 @@ time:
         hours: 3
         then:
           - lambda: |-
-              float current_off = (!id(compressor).state && !id(is_defrost_rest)) ? id(compressor_off_time).state : 0;
+              float current_off = (!id(compressor).state && !id(defrost_mode).state) ? id(compressor_off_time).state : 0;
               float max_off = std::max(id(max_rest_duration_s), current_off);
               if (max_off < ${defrost_cooldown_s}) {
                 ESP_LOGI("defrost", "Nightly defrost triggered (max 24h rest was %.0fs, threshold %us).", max_off, ${defrost_cooldown_s});
@@ -468,10 +468,6 @@ globals:
     type: float
     restore_value: no
     initial_value: "0.0"
-  - id: is_defrost_rest
-    type: bool
-    restore_value: no
-    initial_value: "false"
 
 number:
   - platform: template
@@ -684,10 +680,6 @@ fan:
       - component.update: compressor_off_time
       - lambda: |-
           id(compressor_rpm).publish_state((id(compressor).speed - 1) * 500 + 2000);
-          if (!id(is_defrost_rest)) {
-            id(max_rest_duration_s) = std::max(id(max_rest_duration_s), id(compressor_off_time).state);
-          }
-          id(is_defrost_rest) = false;
       - sensor.duty_time.reset: compressor_off_time
     on_turn_off:
       - output.turn_off: compressor_enable_output
@@ -862,7 +854,6 @@ script:
             if (id(freezer_temp).state <= id(defrost_target_temp).state) {
               ESP_LOGI("defrost", "Defrost target temperature reached (%.1f°C). Starting cooldown timer (%us).", id(defrost_target_temp).state, ${defrost_cooldown_s});
               if (id(compressor).state) id(compressor).turn_off().perform();
-              id(is_defrost_rest) = true;
               id(defrost_cooldown_script).execute();
               return;
             }
@@ -966,6 +957,9 @@ script:
           }
 
           id(compressor_off_time).update();
+          if (!id(compressor).state && !id(defrost_mode).state) {
+            id(max_rest_duration_s) = std::max(id(max_rest_duration_s), (float)id(compressor_off_time).state);
+          }
           // Check if the compressor needs an anti-short-cycle delay.
           if (!id(compressor).state && id(compressor_off_time).state < ${compressor_anti_short_cycle_s}) {
             ESP_LOGI("update_compressor", "Anti-short-cycle active (%.0fs left).", ${compressor_anti_short_cycle_s} - id(compressor_off_time).state);

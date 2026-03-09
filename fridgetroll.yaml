@@ -1006,6 +1006,9 @@ script:
             rpt.reserve(1024);
             rpt = "fridgetroll,host=${name} door_closed=";
             rpt += (id(door_closed).state ? 'T' : 'F');
+            rpt += ",defrost_mode=";
+            rpt += (id(defrost_mode).state ? 'T' : 'F');
+
 
             char buf[32];
 

@@ -986,10 +986,10 @@ script:
             // Change the compressor speed.
             last_compressor_speed_change = now;
             if (!std::isnan(current_delta_per_hour)) {
-              ESP_LOGI("update_compressor", "Changing compressor speed from %d to %d (delta: %.2f°C/h).", 
+              ESP_LOGD("update_compressor", "Changing compressor speed from %d to %d (delta: %.2f°C/h).", 
                        current_speed, next_compressor_speed, current_delta_per_hour);
             } else {
-              ESP_LOGI("update_compressor", "Changing compressor speed from %d to %d (emergency override: %s).", 
+              ESP_LOGD("update_compressor", "Changing compressor speed from %d to %d (emergency override: %s).", 
                        current_speed, next_compressor_speed, emergency_override ? "yes" : "no");
             }
             auto call = id(compressor).turn_on();

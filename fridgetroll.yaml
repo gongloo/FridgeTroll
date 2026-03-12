@@ -286,6 +286,15 @@ sensor:
     web_server:
       sorting_group_id: "environment"
 
+  - platform: template
+    name: "Predicted Freezer Temp"
+    id: freezer_temp_predicted
+    unit_of_measurement: "°C"
+    accuracy_decimals: 2
+    icon: "mdi:clock-end"
+    web_server:
+      sorting_group_id: "environment"
+
   - platform: duty_time
     id: door_open_time
     internal: true
@@ -549,6 +558,21 @@ number:
     max_value: 5.0
     initial_value: 1.0
     step: 0.1
+    restore_value: true
+    entity_category: "config"
+    web_server:
+      sorting_group_id: "settings"
+
+  - platform: template
+    name: "Thermal Prediction Lead"
+    id: thermal_lead_number
+    icon: "mdi:clock-end"
+    unit_of_measurement: "min"
+    optimistic: true
+    min_value: 0
+    max_value: 30
+    initial_value: 5
+    step: 1
     restore_value: true
     entity_category: "config"
     web_server:
@@ -888,7 +912,14 @@ script:
 
           // Temperature delta per hour tracking.
           const float current_delta_per_hour = (temp_history.size() >= history_limit) ? (current_temp - temp_history.front()) * (3600.0f / window_s) : NAN;
-          const float desired_delta_per_hour = (temp_history.size() >= history_limit) ? -error / id(compressor_recovery_time_number).state : NAN;
+
+          // Lead Compensation (Predicted Future Temperature)
+          const float lead_time_h = id(thermal_lead_number).state / 60.0f;
+          const float predicted_temp = current_temp + (std::isnan(current_delta_per_hour) ? 0.0f : current_delta_per_hour * lead_time_h);
+          const float lead_error = predicted_temp - target_temp;
+          id(freezer_temp_predicted).publish_state(predicted_temp);
+
+          const float desired_delta_per_hour = (temp_history.size() >= history_limit) ? -lead_error / id(compressor_recovery_time_number).state : NAN;
           id(freezer_temp_delta_per_hour).publish_state(current_delta_per_hour);
           id(freezer_temp_delta_per_hour_desired).publish_state(desired_delta_per_hour);
 
@@ -935,7 +966,6 @@ script:
             max_error = NAN;
           }
 
-
           // Determine next compressor speed.
           const int current_speed = id(compressor).state ? id(compressor).speed : 0;
           auto next_compressor_speed = std::max(current_speed, 1);
@@ -945,20 +975,22 @@ script:
             // A starting error of 1.0C or an ambient of 25C results in speed 5.
             // Lower values scale down to a minimum of speed 1.
             const float ambient_speed_factor = (id(ambient_temp).state - 15.0f) / 10.0f; // 0 at 15C, 1 at 25C
-            const float error_speed_factor = error / 1.0f; // 0 at 0.0C, 1 at 1.0C
+            const float error_speed_factor = lead_error / 1.0f; // Use lead_error to account for warming trend
             
             float combined_factor = std::max(ambient_speed_factor, error_speed_factor);
             next_compressor_speed = std::clamp((int)(1.0f + 4.0f * combined_factor), 1, 5);
             
-            ESP_LOGI("update_compressor", "Starting compressor at adaptive speed %d (error: %.2f, ambient: %.2f).", 
-                     next_compressor_speed, error, id(ambient_temp).state);
+            ESP_LOGI("update_compressor", "Starting compressor at adaptive speed %d (lead_error: %.2f, ambient: %.2f).", 
+                     next_compressor_speed, lead_error, id(ambient_temp).state);
           } else if (current_temp >= target_temp + ${compressor_emergency_delta}) {
             // Absolute threshold bypass: jump to max speed
             next_compressor_speed = 5;
             emergency_override = true;
-          } else if (current_temp <= target_temp) {
-            // Reached ideal target, float at minimum speed
+          } else if (lead_error <= 0.0f) {
+            // Predicted error is zero or negative: we have already done enough cooling.
+            // Reached (or predicted to reach) ideal target, float at minimum speed
             next_compressor_speed = 1;
+            ESP_LOGD("update_compressor", "Predictive braking: lead_error is %.2f, floating at speed 1.", lead_error);
           } else if (temp_history.size() >= history_limit) {
             // Only use dynamic evaluation once history is fully populated
             const float tolerance = id(compressor_recovery_tolerance_number).state;
@@ -1056,6 +1088,8 @@ script:
             add_val("compressor_recovery_time_measured", id(compressor_recovery_time_measured_sensor).state);
             add_val("compressor_recovery_window", id(compressor_window_number).state);
             add_val("compressor_recovery_tolerance", id(compressor_recovery_tolerance_number).state);
+            add_val("thermal_lead", id(thermal_lead_number).state);
+            add_val("freezer_temp_predicted", id(freezer_temp_predicted).state);
 
             if (id(fridge_fan).state || !std::isnan(id(fridge_fan).speed)) {
               add_val("fridge_fan_speed", id(fridge_fan).state ? id(fridge_fan).speed : 0.0f);

@@ -1,12 +1,10 @@
 substitutions:
   name: "fridgetroll"
   temp_update_interval_s: 10
-  # Run the compressor at full blast when kicking on.
-  blast_compressor_for_s: 60
   # Max speed for the fridge fan as a percentage.
   max_fridge_fan_speed: 75
   # Emergency absolute delta (degrees C) above target to trigger max speed
-  compressor_emergency_delta: 1.0
+  compressor_emergency_delta: 3.0
   # Anti-short-cycle delay for the compressor.
   compressor_anti_short_cycle_s: 180
   # Duration to keep the compressor off during defrost.
@@ -942,7 +940,7 @@ script:
           const int current_speed = id(compressor).state ? id(compressor).speed : 0;
           auto next_compressor_speed = std::max(current_speed, 1);
           bool emergency_override = false;
-          if (id(compressor_on_time).state < ${blast_compressor_for_s}) {
+          if (current_speed == 0) {
             // Always start compressor at max.
             next_compressor_speed = 5;
           } else if (current_temp >= target_temp + ${compressor_emergency_delta}) {

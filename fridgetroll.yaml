@@ -953,20 +953,20 @@ script:
             // A starting error of 1.0C or an ambient of 25C results in speed 5.
             // Lower values scale down to a minimum of speed 1.
             const float ambient_speed_factor = (id(ambient_temp).state - 15.0f) / 10.0f; // 0 at 15C, 1 at 25C
-            const float error_speed_factor = lead_error / 1.0f; // Use lead_error to account for warming trend
+            const float error_speed_factor = error / 1.0f; // 0 at 0.0C, 1 at 1.0C
             
             float combined_factor = std::max(ambient_speed_factor, error_speed_factor);
             next_compressor_speed = std::clamp((int)(1.0f + 4.0f * combined_factor), 1, 5);
             
-            ESP_LOGI("update_compressor", "Starting compressor at adaptive speed %d (lead_error: %.2f, ambient: %.2f).", 
-                     next_compressor_speed, lead_error, id(ambient_temp).state);
+            ESP_LOGI("update_compressor", "Starting compressor at adaptive speed %d (error: %.2f, ambient: %.2f).", 
+                     next_compressor_speed, error, id(ambient_temp).state);
           } else if (lead_error <= 0.0f) {
             // Predicted error is zero or negative: we have already done enough cooling.
             // Reached (or predicted to reach) ideal target, float at minimum speed
             next_compressor_speed = 1;
             ESP_LOGD("update_compressor", "Predictive braking: lead_error is %.2f, floating at speed 1.", lead_error);
-          } else if (temp_history.size() >= history_limit) {
-            // Only use dynamic evaluation once history is fully populated
+          } else if (temp_history.size() >= history_limit && id(compressor_on_time).state >= window_s) {
+            // Only use dynamic evaluation once history is fully populated with cooling data
             const float tolerance = id(compressor_recovery_tolerance_number).state;
             if (current_delta_per_hour > desired_delta_per_hour + tolerance) {
               next_compressor_speed = std::min(current_speed + 1, 5);
@@ -980,7 +980,11 @@ script:
           static float max_error = NAN;
           if (next_compressor_speed == 0) {
             // No more cooling! Turn off the compressor.
-            if (id(compressor).state) id(compressor).turn_off().perform();
+            if (id(compressor).state) {
+              ESP_LOGI("update_compressor", "Compressor OFF | Temp: %.2f°C (Target: %.2f°C) | Delta: %.2f°C/h | Amb: %.2f°C", 
+                       current_temp, target_temp, current_delta_per_hour, id(ambient_temp).state);
+              id(compressor).turn_off().perform();
+            }
             id(freezer_temp_delta_per_hour_desired).publish_state(0);
             max_error = NAN;
             return;
@@ -1024,11 +1028,16 @@ script:
             // Change the compressor speed.
             last_compressor_speed_change = now;
             if (!std::isnan(current_delta_per_hour)) {
-              ESP_LOGD("update_compressor", "Changing compressor speed from %d to %d (delta: %.2f°C/h).", 
-                       current_speed, next_compressor_speed, current_delta_per_hour);
+              ESP_LOGI("update_compressor", "Speed change %d to %d | Temp: %.2f°C (Target: %.2f°C, Predicted: %.2f°C, LeadErr: %.2f°C) | Delta: %.2f°C/h (Desired: %.2f°C/h) | Amb: %.2f°C", 
+                       current_speed, next_compressor_speed, 
+                       current_temp, target_temp, predicted_temp, lead_error,
+                       current_delta_per_hour, desired_delta_per_hour,
+                       id(ambient_temp).state);
             } else {
-              ESP_LOGD("update_compressor", "Changing compressor speed from %d to %d (emergency override: %s).", 
-                       current_speed, next_compressor_speed, emergency_override ? "yes" : "no");
+              ESP_LOGI("update_compressor", "Speed change %d to %d | Temp: %.2f°C (Target: %.2f°C) | Emergency: %s | Amb: %.2f°C", 
+                       current_speed, next_compressor_speed, 
+                       current_temp, target_temp, emergency_override ? "yes" : "no",
+                       id(ambient_temp).state);
             }
             auto call = id(compressor).turn_on();
             call.set_speed(next_compressor_speed);

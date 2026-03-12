@@ -941,8 +941,17 @@ script:
           auto next_compressor_speed = std::max(current_speed, 1);
           bool emergency_override = false;
           if (current_speed == 0) {
-            // Always start compressor at max.
-            next_compressor_speed = 5;
+            // Adaptive starting speed based on error and ambient temperature.
+            // A starting error of 1.0C or an ambient of 25C results in speed 5.
+            // Lower values scale down to a minimum of speed 1.
+            const float ambient_speed_factor = (id(ambient_temp).state - 15.0f) / 10.0f; // 0 at 15C, 1 at 25C
+            const float error_speed_factor = error / 1.0f; // 0 at 0.0C, 1 at 1.0C
+            
+            float combined_factor = std::max(ambient_speed_factor, error_speed_factor);
+            next_compressor_speed = std::clamp((int)(1.0f + 4.0f * combined_factor), 1, 5);
+            
+            ESP_LOGI("update_compressor", "Starting compressor at adaptive speed %d (error: %.2f, ambient: %.2f).", 
+                     next_compressor_speed, error, id(ambient_temp).state);
           } else if (current_temp >= target_temp + ${compressor_emergency_delta}) {
             // Absolute threshold bypass: jump to max speed
             next_compressor_speed = 5;

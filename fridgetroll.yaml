@@ -9,8 +9,8 @@ substitutions:
   compressor_emergency_delta: 1.0
   # Anti-short-cycle delay for the compressor.
   compressor_anti_short_cycle_s: 180
-  # Cooldown time after defrost cooling completes.
-  defrost_cooldown_s: 1800
+  # Duration to keep the compressor off during defrost.
+  defrost_duration_s: 1800
 
   # Pins for S3 Mini
   one_wire_bus_pin: GPIO11
@@ -121,13 +121,11 @@ time:
         hours: 3
         then:
           - lambda: |-
-              float current_off = (!id(compressor).state && !id(defrost_mode).state) ? id(compressor_off_time).state : 0;
-              float max_off = std::max(id(max_rest_duration_s), current_off);
-              if (max_off < ${defrost_cooldown_s}) {
-                ESP_LOGI("defrost", "Nightly defrost triggered (max 24h rest was %.0fs, threshold %us).", max_off, ${defrost_cooldown_s});
+              if (id(max_rest_duration_s) < ${defrost_duration_s}) {
+                ESP_LOGI("defrost", "Nightly defrost triggered (max 24h rest was %.0fs, threshold %us).", id(max_rest_duration_s), ${defrost_duration_s});
                 id(defrost_mode).turn_on();
               } else {
-                ESP_LOGI("defrost", "Nightly defrost skipped (max 24h rest was %.0fs, threshold %us).", max_off, ${defrost_cooldown_s});
+                ESP_LOGI("defrost", "Nightly defrost skipped (max 24h rest was %.0fs, threshold %us).", id(max_rest_duration_s), ${defrost_duration_s});
               }
               id(max_rest_duration_s) = 0;
 
@@ -592,8 +590,6 @@ switch:
     optimistic: true
     web_server:
       sorting_group_id: "command"
-    on_turn_off:
-      - script.stop: defrost_cooldown_script
 
 binary_sensor:
   - platform: gpio
@@ -823,15 +819,11 @@ script:
           then:
             - button.press: restart_button
 
-  - id: defrost_cooldown_script
-    then:
-      - delay: ${defrost_cooldown_s}s
-      - switch.turn_off: defrost_mode
-
   - id: update_compressor
     then:
       - lambda: |-
           static uint32_t last_compressor_speed_change = 0;
+          static bool defrosting_after_deep_chill = false;
 
           // Sliding window state
           static std::deque<float> temp_history;
@@ -839,75 +831,45 @@ script:
           const uint32_t kEvalIntervalMs = ${temp_update_interval_s} * 1000;
           const float window_s = id(compressor_window_number).state;
           const size_t history_limit = static_cast<size_t>(window_s / ${temp_update_interval_s}) + 1;
+          const uint32_t now = millis();
 
           if(id(manual_override).state) {
-            ESP_LOGW("update_compressor", "Manual override is on, skipping automatic speed update.");
+            ESP_LOGW("update_compressor", "Manual override is on; skipping automatic speed update.");
+            if (id(defrost_mode).state) {
+              ESP_LOGW("update_compressor", "Manual override is on; disabling defrost.");
+              id(defrost_mode).publish_state(false);
+              defrosting_after_deep_chill = false;
+            }
             return;
           }
 
-          if (id(defrost_mode).state) {
-            if (id(defrost_cooldown_script).is_running()) {
-              if (id(compressor).state) id(compressor).turn_off().perform();
-              return;
-            }
-
+          // Start/stop defrost logic.
+          if (id(defrost_mode).state && !defrosting_after_deep_chill) {
+            // Entering defrost.
             if (id(freezer_temp).state <= id(defrost_target_temp).state) {
-              ESP_LOGI("defrost", "Defrost target temperature reached (%.1f°C). Starting cooldown timer (%us).", id(defrost_target_temp).state, ${defrost_cooldown_s});
+              // Deep chill complete.
+              ESP_LOGI("defrost", "Target temperature reached (%.1f°C); shutting compressor for %us.", id(defrost_target_temp).state, ${defrost_duration_s});
               if (id(compressor).state) id(compressor).turn_off().perform();
-              id(defrost_cooldown_script).execute();
-              return;
-            }
-
-
-            // Force max speed
-            if (!id(compressor).state || id(compressor).speed != 5) {
-              ESP_LOGD("defrost", "Defrost active: forcing compressor to speed 5");
+              defrosting_after_deep_chill = true;
+            } else if (!id(compressor).state || id(compressor).speed != 5) {
+              // Deep chill commence.
+              ESP_LOGI("defrost", "Entering deep chill: forcing compressor to maximum speed.");
               auto call = id(compressor).turn_on();
               call.set_speed(5);
               call.perform();
             }
-            return;
           }
 
           const float current_temp = id(freezer_temp).state;
           if (std::isnan(current_temp)) {
-            ESP_LOGE("update_compressor", "Freezer temperature is NaN, skipping automatic speed update.");
+            ESP_LOGE("update_compressor", "Freezer temperature is NaN; skipping automatic speed update.");
             return;
           }
 
-          static uint32_t recovery_start_ms = 0;
-          static float max_error = NAN;
-
-          const float target_temp = id(freezer_thermostat).target_temperature;
+          const float target_temp = id(defrost_mode).state ? id(defrost_target_temp).state : id(freezer_thermostat).target_temperature;
           const float error = current_temp - target_temp;
 
-          // If the thermostat itself is turned completely off or is satisfied
-          if (id(freezer_thermostat).action != climate::CLIMATE_ACTION_COOLING) {
-            if (id(compressor).state) id(compressor).turn_off().perform();
-            id(freezer_temp_delta_per_hour_desired).publish_state(0);
-            temp_history.clear(); // Fresh start when we kick back on
-            max_error = NAN;
-            return;
-          } else if (std::isnan(max_error) && error > 0.0f) {
-            recovery_start_ms = millis();
-            max_error = error;
-          }
-
-          // Track the maximum error reached during this cooling cycle
-          max_error = std::max(max_error, error);
-
-          // If we've reached our target temp.
-          if (current_temp <= target_temp && !std::isnan(max_error)) {
-            const float elapsed_hours = (millis() - recovery_start_ms) / 3600000.0f;
-            if (elapsed_hours > 0.05f && max_error > 0.5f) {
-                id(compressor_recovery_time_measured_sensor).publish_state(elapsed_hours);
-                ESP_LOGI("recovery_profiler", "Cooling cycle complete. Took %.2f hours. Max error was %.2f°C.", elapsed_hours, max_error);
-            }
-            max_error = NAN;
-          }
-
           // Update evaluation timing
-          const uint32_t now = millis();
           // Subtract 200ms to allow for minor ESPHome interval jitter
           if (temp_history.empty() || now - last_eval_time >= kEvalIntervalMs - 200) {
             temp_history.push_back(current_temp);
@@ -926,16 +888,60 @@ script:
             ESP_LOGD("update_compressor", "Temp history: [%s]", history_str.c_str());
           }
 
-          const int current_speed = id(compressor).state ? id(compressor).speed : 0;
-          auto next_compressor_speed = std::max(current_speed, 1);
-
-          bool emergency_override = false;
+          // Temperature delta per hour tracking.
           const float current_delta_per_hour = (temp_history.size() >= history_limit) ? (current_temp - temp_history.front()) * (3600.0f / window_s) : NAN;
           const float desired_delta_per_hour = (temp_history.size() >= history_limit) ? -error / id(compressor_recovery_time_number).state : NAN;
           id(freezer_temp_delta_per_hour).publish_state(current_delta_per_hour);
           id(freezer_temp_delta_per_hour_desired).publish_state(desired_delta_per_hour);
 
+          // On/Off time tracking.
           id(compressor_on_time).update();
+          id(compressor_off_time).update();
+          if (!id(compressor).state) {
+            float off_time = id(compressor_off_time).state;
+            if (defrosting_after_deep_chill) {
+              // When defrosting, subtract out the forced defrost time from our max tracking.
+              off_time -= ${defrost_duration_s};
+            }
+            id(max_rest_duration_s) = std::max(id(max_rest_duration_s), off_time);
+          }
+
+          // Defrost rest period.
+          if (id(defrost_mode).state && defrosting_after_deep_chill) {
+            if (id(compressor_off_time).state < ${defrost_duration_s}) {
+              return;
+            }
+            id(defrost_mode).publish_state(false);
+          }
+
+          // Max error and recovery tracking.
+          static uint32_t recovery_start_ms = 0;
+          static float max_error = NAN;
+          if (id(freezer_thermostat).action != climate::CLIMATE_ACTION_COOLING) {
+            if (id(compressor).state) id(compressor).turn_off().perform();
+            id(freezer_temp_delta_per_hour_desired).publish_state(0);
+            temp_history.clear(); // Fresh start when we kick back on
+            max_error = NAN;
+            return;
+          } else if (std::isnan(max_error) && error > 0.0f) {
+            recovery_start_ms = millis();
+            max_error = error;
+          }
+          max_error = std::max(max_error, error);
+          if (current_temp <= target_temp && !std::isnan(max_error)) {
+            const float elapsed_hours = (millis() - recovery_start_ms) / 3600000.0f;
+            if (elapsed_hours > 0.05f && max_error > 0.5f) {
+                id(compressor_recovery_time_measured_sensor).publish_state(elapsed_hours);
+                ESP_LOGI("recovery_profiler", "Cooling cycle complete. Took %.2f hours. Max error was %.2f°C.", elapsed_hours, max_error);
+            }
+            max_error = NAN;
+          }
+
+
+          // Determine next compressor speed.
+          const int current_speed = id(compressor).state ? id(compressor).speed : 0;
+          auto next_compressor_speed = std::max(current_speed, 1);
+          bool emergency_override = false;
           if (id(compressor_on_time).state < ${blast_compressor_for_s}) {
             // Always start compressor at max.
             next_compressor_speed = 5;
@@ -956,10 +962,6 @@ script:
             }
           }
 
-          id(compressor_off_time).update();
-          if (!id(compressor).state && !id(defrost_mode).state) {
-            id(max_rest_duration_s) = std::max(id(max_rest_duration_s), (float)id(compressor_off_time).state);
-          }
           // Check if the compressor needs an anti-short-cycle delay.
           if (!id(compressor).state && id(compressor_off_time).state < ${compressor_anti_short_cycle_s}) {
             ESP_LOGI("update_compressor", "Anti-short-cycle active (%.0fs left).", ${compressor_anti_short_cycle_s} - id(compressor_off_time).state);
@@ -995,6 +997,7 @@ script:
             auto call = id(compressor).turn_on();
             call.set_speed(next_compressor_speed);
             call.perform();
+            defrosting_after_deep_chill = false;
           }
 
   - id: report_stats

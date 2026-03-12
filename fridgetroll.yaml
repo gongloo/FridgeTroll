@@ -865,23 +865,6 @@ script:
             return;
           }
 
-          // Start/stop defrost logic.
-          if (id(defrost_mode).state && !defrosting_after_deep_chill) {
-            // Entering defrost.
-            if (id(freezer_temp).state <= id(defrost_target_temp).state) {
-              // Deep chill complete.
-              ESP_LOGI("defrost", "Target temperature reached (%.1f°C); shutting compressor for %us.", id(defrost_target_temp).state, ${defrost_duration_s});
-              if (id(compressor).state) id(compressor).turn_off().perform();
-              defrosting_after_deep_chill = true;
-            } else if (!id(compressor).state || id(compressor).speed != 5) {
-              // Deep chill commence.
-              ESP_LOGI("defrost", "Entering deep chill: forcing compressor to maximum speed.");
-              auto call = id(compressor).turn_on();
-              call.set_speed(5);
-              call.perform();
-            }
-          }
-
           const float current_temp = id(freezer_temp).state;
           if (std::isnan(current_temp)) {
             ESP_LOGE("update_compressor", "Freezer temperature is NaN; skipping automatic speed update.");
@@ -943,15 +926,62 @@ script:
             id(defrost_mode).publish_state(false);
           }
 
-          // Max error and recovery tracking.
+          // Determine next compressor speed.
+          const int current_speed = id(compressor).state ? id(compressor).speed : 0;
+          auto next_compressor_speed = std::max(current_speed, 1);
+          bool emergency_override = false;
+          if (id(freezer_thermostat).action != climate::CLIMATE_ACTION_COOLING &&
+              !id(defrost_mode).state) {
+            next_compressor_speed = 0;
+          } else if (id(defrost_mode).state && !defrosting_after_deep_chill) {
+            if (current_temp <= target_temp) {
+              ESP_LOGI("defrost", "Target temperature reached (%.1f°C); shutting compressor for %us.", target_temp, ${defrost_duration_s});
+              next_compressor_speed = 0;
+              defrosting_after_deep_chill = true;
+            } else {
+              next_compressor_speed = 5;
+              if (current_speed != next_compressor_speed) {
+                ESP_LOGI("defrost", "Entering deep chill: forcing compressor to maximum speed.");
+              }
+            }
+          } else if (current_temp >= target_temp + ${compressor_emergency_delta}) {
+            // Absolute threshold bypass: jump to max speed
+            next_compressor_speed = 5;
+            emergency_override = true;
+          } else if (current_speed == 0) {
+            // Adaptive starting speed based on error and ambient temperature.
+            // A starting error of 1.0C or an ambient of 25C results in speed 5.
+            // Lower values scale down to a minimum of speed 1.
+            const float ambient_speed_factor = (id(ambient_temp).state - 15.0f) / 10.0f; // 0 at 15C, 1 at 25C
+            const float error_speed_factor = lead_error / 1.0f; // Use lead_error to account for warming trend
+            
+            float combined_factor = std::max(ambient_speed_factor, error_speed_factor);
+            next_compressor_speed = std::clamp((int)(1.0f + 4.0f * combined_factor), 1, 5);
+            
+            ESP_LOGI("update_compressor", "Starting compressor at adaptive speed %d (lead_error: %.2f, ambient: %.2f).", 
+                     next_compressor_speed, lead_error, id(ambient_temp).state);
+          } else if (lead_error <= 0.0f) {
+            // Predicted error is zero or negative: we have already done enough cooling.
+            // Reached (or predicted to reach) ideal target, float at minimum speed
+            next_compressor_speed = 1;
+            ESP_LOGD("update_compressor", "Predictive braking: lead_error is %.2f, floating at speed 1.", lead_error);
+          } else if (temp_history.size() >= history_limit) {
+            // Only use dynamic evaluation once history is fully populated
+            const float tolerance = id(compressor_recovery_tolerance_number).state;
+            if (current_delta_per_hour > desired_delta_per_hour + tolerance) {
+              next_compressor_speed = std::min(current_speed + 1, 5);
+            } else if (current_delta_per_hour < desired_delta_per_hour - tolerance) {
+              next_compressor_speed = std::max(current_speed - 1, 1);
+            }
+          }
+
+          // Turn off compressor as necessary, tracking max error and recovery time.
           static uint32_t recovery_start_ms = 0;
           static float max_error = NAN;
-          if (id(freezer_thermostat).action != climate::CLIMATE_ACTION_COOLING &&
-              id(defrost_mode).state == false) {
+          if (next_compressor_speed == 0) {
             // No more cooling! Turn off the compressor.
             if (id(compressor).state) id(compressor).turn_off().perform();
             id(freezer_temp_delta_per_hour_desired).publish_state(0);
-            temp_history.clear(); // Fresh start when we kick back on
             max_error = NAN;
             return;
           }
@@ -969,48 +999,12 @@ script:
             max_error = NAN;
           }
 
-          // Determine next compressor speed.
-          const int current_speed = id(compressor).state ? id(compressor).speed : 0;
-          auto next_compressor_speed = std::max(current_speed, 1);
-          bool emergency_override = false;
-          if (current_speed == 0) {
-            // Adaptive starting speed based on error and ambient temperature.
-            // A starting error of 1.0C or an ambient of 25C results in speed 5.
-            // Lower values scale down to a minimum of speed 1.
-            const float ambient_speed_factor = (id(ambient_temp).state - 15.0f) / 10.0f; // 0 at 15C, 1 at 25C
-            const float error_speed_factor = lead_error / 1.0f; // Use lead_error to account for warming trend
-            
-            float combined_factor = std::max(ambient_speed_factor, error_speed_factor);
-            next_compressor_speed = std::clamp((int)(1.0f + 4.0f * combined_factor), 1, 5);
-            
-            ESP_LOGI("update_compressor", "Starting compressor at adaptive speed %d (lead_error: %.2f, ambient: %.2f).", 
-                     next_compressor_speed, lead_error, id(ambient_temp).state);
-          } else if (current_temp >= target_temp + ${compressor_emergency_delta}) {
-            // Absolute threshold bypass: jump to max speed
-            next_compressor_speed = 5;
-            emergency_override = true;
-          } else if (lead_error <= 0.0f) {
-            // Predicted error is zero or negative: we have already done enough cooling.
-            // Reached (or predicted to reach) ideal target, float at minimum speed
-            next_compressor_speed = 1;
-            ESP_LOGD("update_compressor", "Predictive braking: lead_error is %.2f, floating at speed 1.", lead_error);
-          } else if (temp_history.size() >= history_limit) {
-            // Only use dynamic evaluation once history is fully populated
-            const float tolerance = id(compressor_recovery_tolerance_number).state;
-            if (current_delta_per_hour > desired_delta_per_hour + tolerance) {
-              next_compressor_speed = std::min(current_speed + 1, 5);
-            } else if (current_delta_per_hour < desired_delta_per_hour - tolerance) {
-              next_compressor_speed = std::max(current_speed - 1, 1);
-            }
-          }
-
           // Check if the compressor needs an anti-short-cycle delay.
           if (!id(compressor).state && id(compressor_off_time).state < ${compressor_anti_short_cycle_s}) {
             ESP_LOGI("update_compressor", "Anti-short-cycle active (%.0fs left).", ${compressor_anti_short_cycle_s} - id(compressor_off_time).state);
-          } else if (!id(compressor).state || id(compressor).speed != next_compressor_speed) {
+          } else if (!id(compressor).state || current_speed != next_compressor_speed) {
             // Check if the compressor speed change is allowed.
             const uint32_t min_interval_ms = id(compressor_speed_change_interval_number).state * 1000;
-            const int current_speed = id(compressor).speed;
             
             bool allow_change = false;
             if (emergency_override) {

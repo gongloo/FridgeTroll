@@ -9,6 +9,9 @@ substitutions:
   compressor_anti_short_cycle_s: 180
   # Duration to keep the compressor off during defrost.
   defrost_duration_s: 1800
+  # Fridge freeze protection thresholds.
+  fridge_freeze_protection_low: 1.0
+  fridge_freeze_protection_high: 1.5
 
   # Pins for S3 Mini
   one_wire_bus_pin: GPIO11
@@ -722,7 +725,7 @@ climate:
     default_target_temperature_high: 3.5
 
     visual:
-      min_temperature: 1
+      min_temperature: ${math.ceil(fridge_freeze_protection_high)}
       max_temperature: 5
       temperature_step: 0.5
 
@@ -926,11 +929,33 @@ script:
             id(defrost_mode).publish_state(false);
           }
 
+          // Freeze protection logic.
+          static bool freeze_protection_active = false;
+          if (!std::isnan(id(fridge_temp).state)) {
+            if (id(fridge_temp).state <= ${fridge_freeze_protection_low}) {
+              if (!freeze_protection_active) {
+                ESP_LOGW("update_compressor", "Freeze protection ACTIVE (Fridge: %.2f°C <= %.2f°C).", id(fridge_temp).state, ${fridge_freeze_protection_low});
+                freeze_protection_active = true;
+              }
+            } else if (id(fridge_temp).state >= ${fridge_freeze_protection_high}) {
+              if (freeze_protection_active) {
+                ESP_LOGI("update_compressor", "Freeze protection DEACTIVATED (Fridge: %.2f°C >= %.2f°C).", id(fridge_temp).state, ${fridge_freeze_protection_high});
+                freeze_protection_active = false;
+              }
+            }
+          }
+
           // Determine next compressor speed.
           const int current_speed = id(compressor).state ? id(compressor).speed : 0;
           auto next_compressor_speed = std::max(current_speed, 1);
           bool emergency_override = false;
-          if (id(freezer_thermostat).action != climate::CLIMATE_ACTION_COOLING &&
+          if (freeze_protection_active) {
+            next_compressor_speed = 0;
+            if (id(defrost_mode).state && !defrosting_after_deep_chill) {
+              ESP_LOGI("defrost", "Freeze protection active during deep chill; transitioning to rest period early.");
+              defrosting_after_deep_chill = true;
+            }
+          } else if (id(freezer_thermostat).action != climate::CLIMATE_ACTION_COOLING &&
               !id(defrost_mode).state) {
             next_compressor_speed = 0;
           } else if (id(defrost_mode).state && !defrosting_after_deep_chill) {

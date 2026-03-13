@@ -17,8 +17,8 @@ substitutions:
   one_wire_bus_pin: GPIO11
   compressor_enable_pin: GPIO12
   compressor_pwm_pin: GPIO10
-  fan_speed_pin: GPIO4
-  fan_pwm_pin: GPIO13
+  compressor_fan_speed_pin: GPIO4
+  compressor_fan_pwm_pin: GPIO13
   door_pin: GPIO2
   rgb_pin: GPIO47
   fridge_fan_pin: GPIO18
@@ -233,7 +233,7 @@ sensor:
       - lambda: return x / 2.0;
     update_interval: ${temp_update_interval_s}s
     pin:
-      number: ${fan_speed_pin}
+      number: ${compressor_fan_speed_pin}
       inverted: true
       mode:
         input: true
@@ -336,7 +336,7 @@ sensor:
       then:
         - lambda: |-
             constexpr float kHighCompressorTemp = 43;
-            constexpr float kMinFanSpeed = 30.0; // Minimum fan speed %
+            constexpr float kMinFanSpeed = 0.0; // Minimum fan speed %
             constexpr float kMaxFanSpeed = 100.0; // Maximum fan speed %
 
             const float comp_temp = x;
@@ -659,7 +659,7 @@ output:
     id: compressor_enable_output
 
   - platform: ledc
-    pin: ${fan_pwm_pin}
+    pin: ${compressor_fan_pwm_pin}
     frequency: 25kHz
     channel: 2
     id: compressor_cooling_fan_pwm

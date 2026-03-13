@@ -1010,7 +1010,6 @@ script:
                        current_temp, target_temp, current_delta_per_hour, id(ambient_temp).state);
               id(compressor).turn_off().perform();
             }
-            id(freezer_temp_delta_per_hour_desired).publish_state(0);
             max_error = NAN;
             return;
           }

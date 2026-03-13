@@ -1076,12 +1076,6 @@ script:
           data: !lambda |-
             std::string rpt;
             rpt.reserve(1024);
-            rpt = "fridgetroll,host=${name} door_closed=";
-            rpt += (id(door_closed).state ? 'T' : 'F');
-            rpt += ",defrost_mode=";
-            rpt += (id(defrost_mode).state ? 'T' : 'F');
-
-
             char buf[32];
 
             auto add_val = [&](const char* name, float val) {
@@ -1101,29 +1095,32 @@ script:
               if (n > 0 && n < (int)sizeof(buf)) rpt.append(buf, n);
             };
 
-            add_int("uptime", id(sys_uptime).state);
-            add_val("fridge_temperature", id(fridge_temp).state);
-            add_val("freezer_temperature", id(freezer_temp).state);
+            rpt = "fridgetroll,host=${name} door_closed=";
+            rpt += (id(door_closed).state ? 'T' : 'F');
+            rpt += ",defrost=";
+            rpt += (id(defrost_mode).state ? 'T' : 'F');
+
+
             add_int("compressor_on_time", id(compressor_on_time).state);
             add_int("compressor_rpm", id(compressor_rpm).state);
-            add_val("fridge_target_temp_low", id(fridge_thermostat).target_temperature_low);
-            add_val("fridge_target_temp_high", id(fridge_thermostat).target_temperature_high);
+            add_int("uptime", id(sys_uptime).state);
+            add_val("ambient_temp", id(ambient_temp).state);
+            add_val("compressor_fan_rpm", id(compressor_fan_rpm).state);
+            add_val("compressor_temp", id(compressor_temp).state);
             add_val("freezer_target_temp", id(freezer_thermostat).target_temperature);
+            add_val("freezer_temp", id(freezer_temp).state);
             add_val("freezer_temp_delta", id(freezer_temp_delta_per_hour).state);
             add_val("freezer_temp_delta_desired", id(freezer_temp_delta_per_hour_desired).state);
-            add_val("compressor_temperature", id(compressor_temp).state);
-            add_val("ambient_temperature", id(ambient_temp).state);
-            add_val("fan_speed", id(compressor_fan_rpm).state);
-            add_val("compressor_recovery_time_target", id(compressor_recovery_time_number).state);
-            add_val("compressor_recovery_time_measured", id(compressor_recovery_time_measured_sensor).state);
-            add_val("compressor_recovery_window", id(compressor_window_number).state);
-            add_val("compressor_recovery_tolerance", id(compressor_recovery_tolerance_number).state);
-            add_val("thermal_lead", id(thermal_lead_number).state);
             add_val("freezer_temp_predicted", id(freezer_temp_predicted).state);
-
-            if (id(fridge_fan).state || !std::isnan(id(fridge_fan).speed)) {
-              add_val("fridge_fan_speed", id(fridge_fan).state ? id(fridge_fan).speed : 0.0f);
-            }
+            add_val("fridge_fan_speed", id(fridge_fan).state ? id(fridge_fan).speed : 0.0f);
+            add_val("fridge_target_temp_high", id(fridge_thermostat).target_temperature_high);
+            add_val("fridge_target_temp_low", id(fridge_thermostat).target_temperature_low);
+            add_val("fridge_temp", id(fridge_temp).state);
+            add_val("recovery_time_measured", id(compressor_recovery_time_measured_sensor).state);
+            add_val("recovery_time_target", id(compressor_recovery_time_number).state);
+            add_val("recovery_tolerance", id(compressor_recovery_tolerance_number).state);
+            add_val("recovery_window", id(compressor_window_number).state);
+            add_val("thermal_lead", id(thermal_lead_number).state);
 
             if (rpt.length() > 1400) {
               ESP_LOGE("report_stats", "Telemetry string too long (%d bytes), potential truncation!", rpt.length());

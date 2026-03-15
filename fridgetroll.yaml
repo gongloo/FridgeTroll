@@ -282,7 +282,7 @@ sensor:
     id: freezer_temp_delta_per_hour
     unit_of_measurement: "°C/h"
     accuracy_decimals: 2
-    icon: "mdi:chart-bell-curve"
+    icon: "mdi:chart-timeline-variant"
     web_server:
       sorting_group_id: "freezer_stats"
 
@@ -291,7 +291,7 @@ sensor:
     id: freezer_temp_delta_per_hour_desired
     unit_of_measurement: "°C/h"
     accuracy_decimals: 2
-    icon: "mdi:chart-bell-curve-cumulative"
+    icon: "mdi:chart-timeline-variant-shimmer"
     web_server:
       sorting_group_id: "freezer_stats"
 

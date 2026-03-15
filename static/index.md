@@ -82,3 +82,40 @@ Reusing existing paths can save significant time and avoid drilling into the fri
 *   **Thermostat Rewiring**: You can often reuse the wires from the original mechanical thermostat to carry the 1-Wire data bus into the fridge compartment, as well as the door sensor +12V.
 *   **Freezer Access**: Use the existing temperature probe tube (that originally housed the mechanical sensing bulb) as a conduit for the freezer DS18B20 wiring.
 *   **Fan Cables**: Fridge fan wires can often be sneaked through the same hole used by the refrigerant tubes to get from the compressor area into the internal compartments.
+
+# Software Configuration
+
+Once FridgeTroll is installed and connected to your network, most configuration can be handled directly through the built-in Web UI.
+
+## 1. Setting Sensor IDs
+
+FridgeTroll uses DS18B20 1-Wire sensors, each of which has a unique 64-bit hardware address. To map your physical sensors to the correct software entities (Fridge, Freezer, Compressor, Ambient):
+
+1.  Open the FridgeTroll Web UI in your browser.
+2.  Navigate to the **Debug Tools** section.
+3.  Click the **Dump Sensor IDs** button.
+4.  Open the ESPHome logs (either via the web interface or serial monitor). You will see a list of discovered sensor addresses in the format `0xXXXXXXXXXXXXXXXX`.
+5.  Match these addresses to your physical sensors (you can dip a sensor in warm water to see which one fluctuates in the logs).
+6.  Scroll to the **Sensor Addresses** section in the Web UI.
+7.  Paste the 18-character hex address (including the `0x` prefix) into the corresponding text field for each sensor.
+8.  The changes are applied immediately; no restart is required for sensor mapping.
+
+## 2. Telemetry & Logging (UDP)
+
+FridgeTroll can send high-frequency telemetry to InfluxDB and system logs to a Syslog server via UDP. These settings are found in the **UDP Configuration** section.
+
+*   **Syslog IP / Port**: Enter the destination IP address and port (default 514) for your Syslog collector.
+*   **InfluxDB IP / Port**: Enter the destination IP address and port (default 8089) for your InfluxDB instance. FridgeTroll uses the InfluxDB UDP listener (Line Protocol).
+
+> [!IMPORTANT]
+> Changes to UDP settings require a device restart to take effect. Use the **Restart** button in the **Host** section after saving your changes.
+
+## 3. Tuning Performance
+
+The **Settings** section allows you to fine-tune the cooling algorithm without reflashing:
+
+*   **Target Recovery Time**: Sets how aggressively the compressor should ramp up to return to target temperature. 
+*   **Thermal Prediction Lead**: Adjusts the "look-ahead" time for predictive braking to prevent overshoot.
+*   **Recovery Tolerance**: Defines the allowed deviation from the target cooling rate before adjusting compressor speed.
+*   **Recovery Evaluation Window**: The duration of history used to calculate the real-time cooling delta.
+*   **Compressor Speed Min Interval**: Prevents excessive oscillation by enforcing a minimum time between speed changes.

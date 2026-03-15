@@ -755,8 +755,10 @@ climate:
     preset:
       - name: Standard
         default_target_temperature_high: -17.5
+        mode: cool
       - name: Deep Freeze
         default_target_temperature_high: -20
+        mode: cool
     default_preset: Standard
 
     cool_overrun: 1.0

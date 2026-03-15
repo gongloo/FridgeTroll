@@ -76,21 +76,27 @@ web_server:
     - id: "environment"
       name: "Environment"
       sorting_weight: 10
-    - id: "sensor_settings"
-      name: "Sensor Configuration"
+    - id: "temp_targets"
+      name: "Temperature Targets"
       sorting_weight: 15
     - id: "settings"
       name: "Settings"
       sorting_weight: 20
-    - id: "udp_settings"
-      name: "UDP Configuration (Restart Required)"
-      sorting_weight: 25
     - id: "compressor_stats"
       name: "Compressor Stats"
       sorting_weight: 30
+    - id: "freezer_stats"
+      name: "Freezer Stats"
+      sorting_weight: 35
     - id: "command"
       name: "Command State"
       sorting_weight: 40
+    - id: "sensor_addresses"
+      name: "Sensor Addresses"
+      sorting_weight: 50
+    - id: "udp_settings"
+      name: "UDP Configuration (Restart Required)"
+      sorting_weight: 60
     - id: "debug"
       name: "Debug Tools"
       sorting_weight: 100
@@ -146,13 +152,13 @@ one_wire:
 
 text_sensor:
   - platform: version
-    name: "ESPHome Version"
+    name: "ESPHome"
     web_server:
       sorting_group_id: "host"
 
 sensor:
   - platform: internal_temperature
-    name: "ESP Temperature"
+    name: "ESP"
     id: sys_esp_temperature
     update_interval: 60s
     icon: "mdi:thermometer-lines"
@@ -183,10 +189,10 @@ sensor:
     accuracy_decimals: 2
     entity_category: "diagnostic"
     web_server:
-      sorting_group_id: "environment"
+      sorting_group_id: "freezer_stats"
 
   - platform: dallas_temp
-    name: "Fridge Temperature"
+    name: "Fridge"
     icon: "mdi:water-thermometer"
     web_server:
       sorting_group_id: "environment"
@@ -204,7 +210,7 @@ sensor:
         - script.execute: pet_fridge_watchdog
 
   - platform: dallas_temp
-    name: "Freezer Temperature"
+    name: "Freezer"
     icon: "mdi:snowflake-thermometer"
     web_server:
       sorting_group_id: "environment"
@@ -222,7 +228,7 @@ sensor:
         - script.execute: pet_freezer_watchdog
 
   - platform: pulse_counter
-    name: "Fan Speed"
+    name: "Compressor Cooling Fan"
     id: "compressor_fan_rpm"
     icon: "mdi:fan"
     web_server:
@@ -272,13 +278,13 @@ sensor:
       accuracy_decimals: 0
 
   - platform: template
-    name: "Freezer Temperature Delta"
+    name: "Freezer Delta"
     id: freezer_temp_delta_per_hour
     unit_of_measurement: "°C/h"
     accuracy_decimals: 2
     icon: "mdi:chart-bell-curve"
     web_server:
-      sorting_group_id: "environment"
+      sorting_group_id: "freezer_stats"
 
   - platform: template
     name: "Desired Freezer Delta"
@@ -287,16 +293,16 @@ sensor:
     accuracy_decimals: 2
     icon: "mdi:chart-bell-curve-cumulative"
     web_server:
-      sorting_group_id: "environment"
+      sorting_group_id: "freezer_stats"
 
   - platform: template
-    name: "Predicted Freezer Temp"
+    name: "Predicted Freezer"
     id: freezer_temp_predicted
     unit_of_measurement: "°C"
     accuracy_decimals: 2
     icon: "mdi:clock-end"
     web_server:
-      sorting_group_id: "environment"
+      sorting_group_id: "freezer_stats"
 
   - platform: duty_time
     id: door_open_time
@@ -319,7 +325,7 @@ sensor:
           id(compressor_pwm).set_level(duty);
 
   - platform: dallas_temp
-    name: "Compressor Temperature"
+    name: "Compressor"
     id: compressor_temp
     icon: "mdi:radiator"
     web_server:
@@ -370,7 +376,7 @@ sensor:
             call.perform();
 
   - platform: dallas_temp
-    name: "Ambient Temperature"
+    name: "Ambient"
     id: ambient_temp
     icon: "mdi:home-thermometer"
     web_server:
@@ -387,7 +393,7 @@ sensor:
 text:
   - platform: template
     mode: text
-    name: "Fridge Temperature Address"
+    name: "Fridge"
     id: fridge_temp_address_text
     icon: "mdi:identifier"
     optimistic: true
@@ -396,13 +402,13 @@ text:
     restore_value: true
     entity_category: "config"
     web_server:
-      sorting_group_id: "sensor_settings"
+      sorting_group_id: "sensor_addresses"
     on_value:
       - script.execute: apply_sensor_addresses
 
   - platform: template
     mode: text
-    name: "Freezer Temperature Address"
+    name: "Freezer"
     id: freezer_temp_address_text
     icon: "mdi:identifier"
     optimistic: true
@@ -411,13 +417,13 @@ text:
     restore_value: true
     entity_category: "config"
     web_server:
-      sorting_group_id: "sensor_settings"
+      sorting_group_id: "sensor_addresses"
     on_value:
       - script.execute: apply_sensor_addresses
 
   - platform: template
     mode: text
-    name: "Compressor Temperature Address"
+    name: "Compressor"
     id: compressor_temp_address_text
     icon: "mdi:identifier"
     optimistic: true
@@ -426,13 +432,13 @@ text:
     restore_value: true
     entity_category: "config"
     web_server:
-      sorting_group_id: "sensor_settings"
+      sorting_group_id: "sensor_addresses"
     on_value:
       - script.execute: apply_sensor_addresses
 
   - platform: template
     mode: text
-    name: "Ambient Temperature Address"
+    name: "Ambient"
     id: ambient_temp_address_text
     icon: "mdi:identifier"
     optimistic: true
@@ -441,15 +447,15 @@ text:
     restore_value: true
     entity_category: "config"
     web_server:
-      sorting_group_id: "sensor_settings"
+      sorting_group_id: "sensor_addresses"
     on_value:
       - script.execute: apply_sensor_addresses
 
   - platform: template
     mode: text
-    name: "Syslog Server IP"
+    name: "Syslog IP"
     id: syslog_ip_text
-    icon: "mdi:ip-network"
+    icon: "mdi:console-network"
     optimistic: true
     min_length: 7
     max_length: 15
@@ -460,9 +466,9 @@ text:
 
   - platform: template
     mode: text
-    name: "InfluxDB Host IP"
+    name: "InfluxDB IP"
     id: influxdb_host_text
-    icon: "mdi:ip-network"
+    icon: "mdi:table-network"
     optimistic: true
     min_length: 7
     max_length: 15
@@ -481,7 +487,7 @@ number:
   - platform: template
     name: "Syslog Port"
     id: syslog_port_number
-    icon: "mdi:network-port"
+    icon: "mdi:numeric"
     optimistic: true
     min_value: 1
     max_value: 65535
@@ -495,7 +501,7 @@ number:
   - platform: template
     name: "InfluxDB Port"
     id: influxdb_port_number
-    icon: "mdi:network-port"
+    icon: "mdi:numeric"
     optimistic: true
     min_value: 1
     max_value: 65535
@@ -509,7 +515,7 @@ number:
   - platform: template
     name: "Compressor Speed Min Interval"
     id: compressor_speed_change_interval_number
-    icon: "mdi:clock-fast"
+    icon: "mdi:speedometer-slow"
     optimistic: true
     min_value: 0
     max_value: 600
@@ -582,7 +588,7 @@ number:
       sorting_group_id: "settings"
 
   - platform: template
-    name: "Defrost Target Temperature"
+    name: "Defrost Target"
     id: defrost_target_temp
     icon: "mdi:thermometer-minus"
     unit_of_measurement: "°C"
@@ -714,12 +720,12 @@ fan:
 
 climate:
   - platform: bang_bang
-    name: "Fridge Thermostat"
+    name: "Fridge"
     id: fridge_thermostat
     sensor: fridge_temp
     icon: "mdi:fridge-bottom"
     web_server:
-      sorting_group_id: "settings"
+      sorting_group_id: "temp_targets"
 
     default_target_temperature_low: 2
     default_target_temperature_high: 3.5
@@ -739,12 +745,12 @@ climate:
             speed: ${max_fridge_fan_speed}
 
   - platform: thermostat
-    name: "Freezer Thermostat"
+    name: "Freezer"
     id: freezer_thermostat
     sensor: freezer_temp
     icon: "mdi:fridge-top"
     web_server:
-      sorting_group_id: "settings"
+      sorting_group_id: "temp_targets"
 
     preset:
       - name: Standard

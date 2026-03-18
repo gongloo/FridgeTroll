@@ -12,12 +12,9 @@ jobs:
     name: Build Firmware
     uses: ./.github/workflows/build-esphome.yml
     with:
-      #### Modify below here to match your project ####
       files: |
         fridgetroll.yaml
-      esphome-version: 2026.2.1
-      #### Modify above here to match your project ####
-
+      esphome-version: 2026.2.4
       release-summary: ${{ github.event.release.body }}
       release-url: ${{ github.event.release.html_url }}
       release-version: ${{ github.event.release.tag_name }}

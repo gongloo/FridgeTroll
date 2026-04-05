@@ -859,7 +859,7 @@ script:
           static bool defrosting_after_deep_chill = false;
 
           // Sliding window state
-          static std::deque<float> temp_history;
+          static std::vector<float> temp_history;
           static uint32_t last_eval_time = 0;
           const uint32_t kEvalIntervalMs = ${temp_update_interval_s} * 1000;
           const float window_s = id(compressor_window_number).state;
@@ -889,7 +889,7 @@ script:
           // Subtract 200ms to allow for minor ESPHome interval jitter
           if (temp_history.empty() || now - last_eval_time >= kEvalIntervalMs - 200) {
             temp_history.push_back(current_temp);
-            while (temp_history.size() > history_limit) temp_history.pop_front();
+            while (temp_history.size() > history_limit) temp_history.erase(temp_history.begin());
             last_eval_time = now;
             
             // Log the full history state for debugging.

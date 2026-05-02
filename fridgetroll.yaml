@@ -1,8 +1,8 @@
 substitutions:
   name: "fridgetroll"
   temp_update_interval_s: 10
-  # Max speed for the fridge fan as a percentage.
-  max_fridge_fan_speed: 75
+  # Default speed for the fridge fan as a percentage.
+  default_fridge_fan_speed: 75
   # Emergency absolute delta (degrees C) above target to trigger max speed
   compressor_emergency_delta: 3.0
   # Anti-short-cycle delay for the compressor.
@@ -740,9 +740,15 @@ climate:
         - fan.turn_off: fridge_fan
     cool_action:
       then:
-        - fan.turn_on:
-            id: fridge_fan
-            speed: ${max_fridge_fan_speed}
+        - if:
+            condition:
+              lambda: "return id(fridge_fan).speed == 0;"
+            then:
+              - fan.turn_on:
+                  id: fridge_fan
+                  speed: ${default_fridge_fan_speed}
+            else:
+              - fan.turn_on: fridge_fan
 
   - platform: thermostat
     name: "Freezer"

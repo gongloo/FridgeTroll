@@ -1,8 +1,6 @@
 substitutions:
   name: "fridgetroll"
-  temp_update_interval_s: 10
-  # Default speed for the fridge fan as a percentage.
-  default_fridge_fan_speed: 75
+  temp_update_interval_s: 15
   # Emergency absolute delta (degrees C) above target to trigger max speed
   compressor_emergency_delta: 3.0
   # Anti-short-cycle delay for the compressor.
@@ -571,6 +569,51 @@ number:
     web_server:
       sorting_group_id: "settings"
 
+  - platform: template
+    name: "Fridge Fan Min Speed"
+    id: fridge_fan_min_speed_number
+    icon: "mdi:fan-speed-1"
+    unit_of_measurement: "%"
+    optimistic: true
+    min_value: 0
+    max_value: 100
+    initial_value: 30
+    step: 5
+    restore_value: true
+    entity_category: "config"
+    web_server:
+      sorting_group_id: "settings"
+
+  - platform: template
+    name: "Fridge Fan Max Speed"
+    id: fridge_fan_max_speed_number
+    icon: "mdi:fan-speed-3"
+    unit_of_measurement: "%"
+    optimistic: true
+    min_value: 0
+    max_value: 100
+    initial_value: 100
+    step: 5
+    restore_value: true
+    entity_category: "config"
+    web_server:
+      sorting_group_id: "settings"
+
+  - platform: template
+    name: "Fridge Fan Ramp Band"
+    id: fridge_fan_ramp_band_number
+    icon: "mdi:thermometer-chevron-up"
+    unit_of_measurement: "°C"
+    optimistic: true
+    min_value: 0.1
+    max_value: 3.0
+    initial_value: 1.5
+    step: 0.1
+    restore_value: true
+    entity_category: "config"
+    web_server:
+      sorting_group_id: "settings"
+
 switch:
   - platform: template
     name: "Manual Override"
@@ -688,7 +731,7 @@ fan:
           id(compressor_rpm).publish_state(id(compressor).state ? (id(compressor).speed - 1) * 500 + 2000 : 0);
 
 climate:
-  - platform: bang_bang
+  - platform: thermostat
     name: "Fridge"
     id: fridge_thermostat
     sensor: fridge_temp
@@ -696,8 +739,18 @@ climate:
     web_server:
       sorting_group_id: "temp_targets"
 
-    default_target_temperature_low: 2
-    default_target_temperature_high: 3.5
+    preset:
+      - name: Standard
+        default_target_temperature_high: 3.0
+        mode: cool
+    default_preset: Standard
+
+    cool_overrun: 1.5
+    cool_deadband: 0.0
+
+    min_idle_time: 0s
+    min_cooling_off_time: 0s
+    min_cooling_run_time: 0s
 
     visual:
       min_temperature: ${math.ceil(fridge_freeze_protection_high)}
@@ -709,15 +762,7 @@ climate:
         - fan.turn_off: fridge_fan
     cool_action:
       then:
-        - if:
-            condition:
-              lambda: "return id(fridge_fan).speed == 0;"
-            then:
-              - fan.turn_on:
-                  id: fridge_fan
-                  speed: ${default_fridge_fan_speed}
-            else:
-              - fan.turn_on: fridge_fan
+        - script.execute: update_fridge_fan
 
   - platform: thermostat
     name: "Freezer"
@@ -784,6 +829,38 @@ light:
       sorting_group_id: "command"
 
 script:
+  - id: update_fridge_fan
+    then:
+      - lambda: |-
+          if (id(manual_override).state) {
+            return;
+          }
+          if (id(fridge_thermostat).action != climate::CLIMATE_ACTION_COOLING) {
+            return;
+          }
+          const float current_temp = id(fridge_temp).state;
+          const float setpoint = id(fridge_thermostat).target_temperature;
+          if (std::isnan(current_temp) || std::isnan(setpoint)) return;
+
+          const float error = current_temp - setpoint;
+          const float ramp_band = std::max(0.1f, id(fridge_fan_ramp_band_number).state);
+
+          float min_speed = id(fridge_fan_min_speed_number).state;
+          float max_speed = id(fridge_fan_max_speed_number).state;
+
+          float speed_pct = min_speed;
+          if (error > 0.0f) {
+            speed_pct += (error / ramp_band) * (max_speed - min_speed);
+          }
+          speed_pct = std::clamp(speed_pct, min_speed, max_speed);
+
+          if (std::abs(id(fridge_fan).speed - speed_pct) > 1.0f) {
+            ESP_LOGD("update_fridge_fan", "Proportional fan speed: %.1f%% (error: %.2f°C)", speed_pct, error);
+            auto call = id(fridge_fan).turn_on();
+            call.set_speed(speed_pct);
+            call.perform();
+          }
+
   - id: apply_sensor_addresses
     then:
       - lambda: |-
@@ -967,7 +1044,8 @@ script:
             // Simple PD Control
             p_term = error * id(pd_p_multiplier_number).state;
             d_term = (std::isnan(current_delta_per_hour) ? 0.0f : current_delta_per_hour) * id(pd_d_multiplier_number).state;
-            ff_term = id(fridge_fan).state ? 1 : 0;
+            float fan_pct = id(fridge_fan).state ? (id(fridge_fan).speed / 100.0f) : 0.0f;
+            ff_term = round(fan_pct * 2.0f);
             int desired_speed = round(p_term + d_term) + ff_term;
             next_compressor_speed = std::clamp(desired_speed, 1, 5);
           }
@@ -1085,8 +1163,7 @@ script:
             add_val("freezer_temp", id(freezer_temp).state);
             add_val("freezer_temp_delta", id(freezer_temp_delta_per_hour).state);
             add_val("fridge_fan_speed", id(fridge_fan).state ? id(fridge_fan).speed : 0.0f);
-            add_val("fridge_target_temp_high", id(fridge_thermostat).target_temperature_high);
-            add_val("fridge_target_temp_low", id(fridge_thermostat).target_temperature_low);
+            add_val("fridge_target_temp", id(fridge_thermostat).target_temperature);
             add_val("fridge_temp", id(fridge_temp).state);
             add_val("recovery_time_measured", id(compressor_recovery_time_measured_sensor).state);
             add_val("pd_p_multiplier", id(pd_p_multiplier_number).state);
@@ -1113,5 +1190,6 @@ interval:
       - component.update: ambient_temp
       - delay: 1s
       - component.update: compressor_temp
+      - script.execute: update_fridge_fan
       - script.execute: update_compressor
       - script.execute: report_stats

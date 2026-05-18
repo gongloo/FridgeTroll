@@ -3,6 +3,8 @@ substitutions:
   temp_update_interval_s: 15
   # Emergency absolute delta (degrees C) above target to trigger max speed
   compressor_emergency_delta: 3.0
+  # Multiplier for how much compressor speed to add when the fridge fan is at 100%
+  fridge_fan_ff_multiplier: 2.0
   # Anti-short-cycle delay for the compressor.
   compressor_anti_short_cycle_s: 180
   # Duration to keep the compressor off during defrost.
@@ -466,6 +468,18 @@ globals:
     type: float
     restore_value: no
     initial_value: "0.0"
+  - id: p_term
+    type: float
+    restore_value: no
+    initial_value: "0.0"
+  - id: d_term
+    type: float
+    restore_value: no
+    initial_value: "0.0"
+  - id: ff_term
+    type: float
+    restore_value: no
+    initial_value: "0.0"
 
 number:
   - platform: template
@@ -541,7 +555,7 @@ number:
       sorting_group_id: "settings"
 
   - platform: template
-    name: "Derivative D-Multiplier"
+    name: "Derivative Cooling D-Multiplier"
     id: pd_d_multiplier_number
     icon: "mdi:math-log"
     optimistic: true
@@ -549,6 +563,49 @@ number:
     max_value: 2.0
     initial_value: 0.2
     step: 0.05
+    restore_value: true
+    entity_category: "config"
+    web_server:
+      sorting_group_id: "settings"
+
+  - platform: template
+    name: "Derivative Warming D-Multiplier"
+    id: pd_d_multiplier_warming_number
+    icon: "mdi:math-log"
+    optimistic: true
+    min_value: 0.0
+    max_value: 2.0
+    initial_value: 0.05
+    step: 0.05
+    restore_value: true
+    entity_category: "config"
+    web_server:
+      sorting_group_id: "settings"
+
+  - platform: template
+    name: "Ambient Feedforward Multiplier"
+    id: ambient_ff_multiplier_number
+    icon: "mdi:thermometer-plus"
+    optimistic: true
+    min_value: 0.0
+    max_value: 0.5
+    initial_value: 0.15
+    step: 0.01
+    restore_value: true
+    entity_category: "config"
+    web_server:
+      sorting_group_id: "settings"
+
+  - platform: template
+    name: "Ambient FF Threshold"
+    id: ambient_ff_threshold_number
+    icon: "mdi:thermometer-alert"
+    unit_of_measurement: "°C"
+    optimistic: true
+    min_value: 10.0
+    max_value: 40.0
+    initial_value: 20.0
+    step: 0.5
     restore_value: true
     entity_category: "config"
     web_server:
@@ -1001,12 +1058,22 @@ script:
           const int current_speed = id(compressor).state ? id(compressor).speed : 0;
           auto next_compressor_speed = std::max(current_speed, 1);
           bool emergency_override = false;
-          float p_term = 0.0f;
-          float d_term = 0.0f;
-          int ff_term = 0;
+          id(p_term) = NAN;
+          id(d_term) = NAN;
+          id(ff_term) = NAN;
+
+          if (!id(defrost_mode).state) {
+            defrosting_after_deep_chill = false;
+          }
 
           const bool in_deep_chill = id(defrost_mode).state && !defrosting_after_deep_chill;
-          deep_chill_start_ms = in_deep_chill ? now : 0;
+          if (in_deep_chill) {
+            if (deep_chill_start_ms == 0) {
+              deep_chill_start_ms = std::max((uint32_t)1, now);
+            }
+          } else {
+            deep_chill_start_ms = 0;
+          }
 
           if (freeze_protection_active) {
             next_compressor_speed = 0;
@@ -1014,7 +1081,7 @@ script:
               ESP_LOGI("defrost", "Freeze protection active during deep chill; transitioning to rest period early.");
               defrosting_after_deep_chill = true;
             }
-          } else if (id(freezer_thermostat).action != climate::CLIMATE_ACTION_COOLING &&
+          } else if (id(freezer_thermostat).action == climate::CLIMATE_ACTION_OFF &&
               !id(defrost_mode).state) {
             next_compressor_speed = 0;
           } else if (in_deep_chill) {
@@ -1036,18 +1103,28 @@ script:
             // Absolute threshold bypass: jump to max speed
             next_compressor_speed = 5;
             emergency_override = true;
-          } else if (error <= 0.0f) {
-            // Reached ideal target, coast at minimum speed until cool_overrun is hit
-            next_compressor_speed = 1;
-            ESP_LOGD("update_compressor", "Target reached: error is %.2f, coasting at speed 1.", error);
           } else {
             // Simple PD Control
-            p_term = error * id(pd_p_multiplier_number).state;
-            d_term = (std::isnan(current_delta_per_hour) ? 0.0f : current_delta_per_hour) * id(pd_d_multiplier_number).state;
-            float fan_pct = id(fridge_fan).state ? (id(fridge_fan).speed / 100.0f) : 0.0f;
-            ff_term = round(fan_pct * 2.0f);
-            int desired_speed = round(p_term + d_term) + ff_term;
-            next_compressor_speed = std::clamp(desired_speed, 1, 5);
+            id(p_term) = error * id(pd_p_multiplier_number).state;
+            const float d_multi = (current_delta_per_hour > 0.0f) ? id(pd_d_multiplier_warming_number).state : id(pd_d_multiplier_number).state;
+            id(d_term) = current_delta_per_hour * d_multi;
+
+            // Feed forward
+            const float fridge_fan_ff = id(fridge_fan).state ? (id(fridge_fan).speed / 100.0f * ${fridge_fan_ff_multiplier}) : 0.0f;
+            const float amb_ff = std::max(0.0f, id(ambient_temp).state - id(ambient_ff_threshold_number).state) * id(ambient_ff_multiplier_number).state;
+            id(ff_term) = fridge_fan_ff + amb_ff;
+
+            const float safe_d = std::isnan((float)id(d_term)) ? 0.0f : (float)id(d_term);
+            const int desired_speed = round((float)id(p_term) + safe_d + (float)id(ff_term));
+            
+            // Hysteresis: reach overrun before shutting off compressor.
+            const float overrun = id(freezer_thermostat).cool_overrun();
+            if (error <= -overrun) {
+              next_compressor_speed = 0;
+            } else {
+              const int min_allowed_speed = id(compressor).state ? 1 : 0;
+              next_compressor_speed = std::clamp(desired_speed, min_allowed_speed, 5);
+            }
           }
 
           // Turn off compressor as necessary, tracking max error and recovery time.
@@ -1102,18 +1179,18 @@ script:
             // Change the compressor speed.
             last_compressor_speed_change = now;
             if (!std::isnan(current_delta_per_hour)) {
-              ESP_LOGI("update_compressor", "Speed change %d to %d | Temp: %.2f°C (Target: %.2f°C) | Delta: %.2f°C/h | Amb: %.2f°C | P: %.2f, D: %.2f, FF: %d", 
+              ESP_LOGI("update_compressor", "Speed change %d to %d | Temp: %.2f°C (Target: %.2f°C) | Delta: %.2f°C/h | Amb: %.2f°C | P: %.2f, D: %.2f, FF: %.2f", 
                        current_speed, next_compressor_speed, 
                        current_temp, target_temp, 
                        current_delta_per_hour,
                        id(ambient_temp).state,
-                       p_term, d_term, ff_term);
+                       (float)id(p_term), (float)id(d_term), (float)id(ff_term));
             } else {
-              ESP_LOGI("update_compressor", "Speed change %d to %d | Temp: %.2f°C (Target: %.2f°C) | Emergency: %s | Amb: %.2f°C | P: %.2f, D: %.2f, FF: %d", 
+              ESP_LOGI("update_compressor", "Speed change %d to %d | Temp: %.2f°C (Target: %.2f°C) | Emergency: %s | Amb: %.2f°C | P: %.2f, D: %.2f, FF: %.2f", 
                        current_speed, next_compressor_speed, 
                        current_temp, target_temp, emergency_override ? "yes" : "no",
                        id(ambient_temp).state,
-                       p_term, d_term, ff_term);
+                       (float)id(p_term), (float)id(d_term), (float)id(ff_term));
             }
             auto call = id(compressor).turn_on();
             call.set_speed(next_compressor_speed);
@@ -1165,9 +1242,14 @@ script:
             add_val("fridge_fan_speed", id(fridge_fan).state ? id(fridge_fan).speed : 0.0f);
             add_val("fridge_target_temp", id(fridge_thermostat).target_temperature);
             add_val("fridge_temp", id(fridge_temp).state);
+            add_val("p_term", id(p_term));
+            add_val("d_term", id(d_term));
+            add_val("ff_term", id(ff_term));
             add_val("recovery_time_measured", id(compressor_recovery_time_measured_sensor).state);
             add_val("pd_p_multiplier", id(pd_p_multiplier_number).state);
-            add_val("pd_d_multiplier", id(pd_d_multiplier_number).state);
+            add_val("pd_d_multiplier_cooling", id(pd_d_multiplier_number).state);
+            add_val("pd_d_multiplier_warming", id(pd_d_multiplier_warming_number).state);
+            add_val("ambient_ff_multiplier", id(ambient_ff_multiplier_number).state);
             add_val("recovery_window", id(compressor_window_number).state);
 
             if (rpt.length() > 1400) {

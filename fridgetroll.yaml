@@ -59,7 +59,6 @@ esp32:
     type: esp-idf
 
 api:
-  reboot_timeout: 0s
 
 improv_serial:
 
@@ -120,7 +119,6 @@ select:
 
 ota:
   - platform: esphome
-    password: !secret ota_password
 
 time:
   - platform: sntp

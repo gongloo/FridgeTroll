@@ -32,8 +32,6 @@ jobs:
     steps:
       - name: Checkout source code
         uses: actions/checkout@v6.0.2
-      - name: Copy secrets.yaml.example to secrets.yaml
-        run: cp secrets.yaml.example secrets.yaml
       - name: ESPHome ${{ matrix.esphome-version }}
         uses: esphome/build-action@v7
         with:

@@ -29,6 +29,10 @@ substitutions:
 
 esphome:
   name: ${name}
+  comment: "Smart refrigerator controller providing advanced temperature management, stall detection, and telemetry"
+  project:
+    name: "gongloo.${name}"
+    version: "0.6"
   on_boot:
     - priority: 600
       then:
@@ -909,7 +913,7 @@ script:
           }
           speed_pct = std::clamp(speed_pct, min_speed, max_speed);
 
-          if (std::abs(id(fridge_fan).speed - speed_pct) > 1.0f) {
+          if (!id(fridge_fan).state || std::abs(id(fridge_fan).speed - speed_pct) > 1.0f) {
             ESP_LOGD("update_fridge_fan", "Proportional fan speed: %.1f%% (error: %.2f°C)", speed_pct, error);
             auto call = id(fridge_fan).turn_on();
             call.set_speed(speed_pct);

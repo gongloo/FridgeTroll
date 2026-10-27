@@ -10,7 +10,7 @@ permissions:
 jobs:
   build-firmware:
     name: Build Firmware
-    uses: ./.github/workflows/build-esphome.yml
+    uses: esphome/workflows/.github/workflows/build.yml@2026.10.2
     with:
       files: |
         fridgetroll.yaml

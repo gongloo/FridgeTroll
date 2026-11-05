@@ -38,10 +38,14 @@ esphome:
     - priority: 600
       then:
         - lambda: |-
+            static const char *empty_addrs[] = {nullptr};
             if (!id(syslog_ip_text).state.empty()) {
               static std::string s_syslog_ip = id(syslog_ip_text).state;
               static const char *syslog_addrs[] = {s_syslog_ip.c_str(), nullptr};
               id(syslog_udp)->set_addresses(syslog_addrs);
+            } else {
+              // Clear address table to prevent fallback broadcast to 255.255.255.255
+              id(syslog_udp)->set_addresses(empty_addrs);
             }
             if (id(syslog_port_number).state > 0) {
               id(syslog_udp)->set_broadcast_port(id(syslog_port_number).state);
@@ -50,6 +54,9 @@ esphome:
               static std::string s_influx_ip = id(influxdb_host_text).state;
               static const char *influx_addrs[] = {s_influx_ip.c_str(), nullptr};
               id(influxdb_udp)->set_addresses(influx_addrs);
+            } else {
+              // Clear address table to prevent fallback broadcast to 255.255.255.255
+              id(influxdb_udp)->set_addresses(empty_addrs);
             }
             if (id(influxdb_port_number).state > 0) {
               id(influxdb_udp)->set_broadcast_port(id(influxdb_port_number).state);
@@ -68,6 +75,7 @@ esp32:
     type: esp-idf
 
 api:
+  reboot_timeout: 0s
 
 improv_serial:
 
@@ -77,6 +85,7 @@ esp32_improv:
 captive_portal:
 
 wifi:
+  reboot_timeout: 0s
   ap:
     ssid: "FridgeTroll Fallback"
 
@@ -198,6 +207,7 @@ sensor:
     icon: "mdi:timer-sand"
     unit_of_measurement: "h"
     accuracy_decimals: 2
+    update_interval: never
     entity_category: "diagnostic"
     web_server:
       sorting_group_id: "freezer_stats"
@@ -293,6 +303,7 @@ sensor:
     id: freezer_temp_delta_per_hour
     unit_of_measurement: "°C/h"
     accuracy_decimals: 2
+    update_interval: never
     icon: "mdi:chart-timeline-variant"
     web_server:
       sorting_group_id: "freezer_stats"
@@ -393,6 +404,7 @@ text:
     min_length: 18
     max_length: 18
     restore_value: true
+    update_interval: never
     entity_category: "config"
     web_server:
       sorting_group_id: "sensor_addresses"
@@ -408,6 +420,7 @@ text:
     min_length: 18
     max_length: 18
     restore_value: true
+    update_interval: never
     entity_category: "config"
     web_server:
       sorting_group_id: "sensor_addresses"
@@ -423,6 +436,7 @@ text:
     min_length: 18
     max_length: 18
     restore_value: true
+    update_interval: never
     entity_category: "config"
     web_server:
       sorting_group_id: "sensor_addresses"
@@ -438,6 +452,7 @@ text:
     min_length: 18
     max_length: 18
     restore_value: true
+    update_interval: never
     entity_category: "config"
     web_server:
       sorting_group_id: "sensor_addresses"
@@ -453,6 +468,7 @@ text:
     min_length: 7
     max_length: 15
     restore_value: true
+    update_interval: never
     entity_category: "config"
     web_server:
       sorting_group_id: "udp_settings"
@@ -466,6 +482,7 @@ text:
     min_length: 7
     max_length: 15
     restore_value: true
+    update_interval: never
     entity_category: "config"
     web_server:
       sorting_group_id: "udp_settings"
@@ -499,6 +516,7 @@ number:
     initial_value: 514
     step: 1
     restore_value: true
+    update_interval: never
     entity_category: "config"
     web_server:
       sorting_group_id: "udp_settings"
@@ -513,6 +531,7 @@ number:
     initial_value: 8089
     step: 1
     restore_value: true
+    update_interval: never
     entity_category: "config"
     web_server:
       sorting_group_id: "udp_settings"
@@ -528,6 +547,7 @@ number:
     step: 5
     unit_of_measurement: "s"
     restore_value: true
+    update_interval: never
     entity_category: "config"
     web_server:
       sorting_group_id: "settings"
@@ -542,6 +562,7 @@ number:
     initial_value: 9.0
     step: 0.2
     restore_value: true
+    update_interval: never
     entity_category: "config"
     web_server:
       sorting_group_id: "settings"
@@ -557,6 +578,7 @@ number:
     initial_value: 180
     step: 15
     restore_value: true
+    update_interval: never
     entity_category: "config"
     web_server:
       sorting_group_id: "settings"
@@ -571,6 +593,7 @@ number:
     initial_value: 0.2
     step: 0.05
     restore_value: true
+    update_interval: never
     entity_category: "config"
     web_server:
       sorting_group_id: "settings"
@@ -585,6 +608,7 @@ number:
     initial_value: 0.05
     step: 0.05
     restore_value: true
+    update_interval: never
     entity_category: "config"
     web_server:
       sorting_group_id: "settings"
@@ -599,6 +623,7 @@ number:
     initial_value: 0.15
     step: 0.01
     restore_value: true
+    update_interval: never
     entity_category: "config"
     web_server:
       sorting_group_id: "settings"
@@ -614,6 +639,7 @@ number:
     initial_value: 20.0
     step: 0.5
     restore_value: true
+    update_interval: never
     entity_category: "config"
     web_server:
       sorting_group_id: "settings"
@@ -629,6 +655,7 @@ number:
     initial_value: -19
     step: 0.5
     restore_value: true
+    update_interval: never
     entity_category: "config"
     web_server:
       sorting_group_id: "settings"
@@ -644,6 +671,7 @@ number:
     initial_value: 20
     step: 5
     restore_value: true
+    update_interval: never
     entity_category: "config"
     web_server:
       sorting_group_id: "settings"
@@ -659,6 +687,7 @@ number:
     initial_value: 100
     step: 5
     restore_value: true
+    update_interval: never
     entity_category: "config"
     web_server:
       sorting_group_id: "settings"
@@ -674,6 +703,7 @@ number:
     initial_value: 1.5
     step: 0.1
     restore_value: true
+    update_interval: never
     entity_category: "config"
     web_server:
       sorting_group_id: "settings"
@@ -1207,64 +1237,69 @@ script:
 
   - id: report_stats
     then:
-      - udp.write:
-          id: influxdb_udp
-          data: !lambda |-
-            std::string rpt;
-            rpt.reserve(1024);
-            char buf[32];
+      - if:
+          condition:
+            lambda: "return !id(influxdb_host_text).state.empty();"
+          then:
+            - udp.write:
+                id: influxdb_udp
+                data: !lambda |-
+                  std::string rpt;
+                  rpt.reserve(1024);
+                  char buf[32];
 
-            auto add_val = [&](const char* name, float val) {
-              if (std::isnan(val)) return;
-              rpt += ",";
-              rpt += name;
-              rpt += "=";
-              int n = snprintf(buf, sizeof(buf), "%.4g", val);
-              if (n > 0 && n < (int)sizeof(buf)) rpt.append(buf, n);
-            };
+                  auto add_val = [&](const char* name, float val) {
+                    if (std::isnan(val)) return;
+                    rpt += ",";
+                    rpt += name;
+                    rpt += "=";
+                    int n = snprintf(buf, sizeof(buf), "%.4g", val);
+                    if (n > 0 && n < (int)sizeof(buf)) rpt.append(buf, n);
+                  };
 
-            auto add_int = [&](const char* name, uint32_t val) {
-              rpt += ",";
-              rpt += name;
-              rpt += "=";
-              int n = snprintf(buf, sizeof(buf), "%ui", val);
-              if (n > 0 && n < (int)sizeof(buf)) rpt.append(buf, n);
-            };
+                  auto add_int = [&](const char* name, float val) {
+                    if (std::isnan(val) || val < 0.0f) return;
+                    rpt += ",";
+                    rpt += name;
+                    rpt += "=";
+                    int n = snprintf(buf, sizeof(buf), "%ui", static_cast<unsigned int>(val));
+                    if (n > 0 && n < (int)sizeof(buf)) rpt.append(buf, n);
+                  };
 
-            rpt = "fridgetroll,host=${name} door_closed=";
-            rpt += (id(door_closed).state ? 'T' : 'F');
-            rpt += ",defrost=";
-            rpt += (id(defrost_mode).state ? 'T' : 'F');
+                  rpt = "fridgetroll,host=${name} door_closed=";
+                  rpt += (id(door_closed).state ? 'T' : 'F');
+                  rpt += ",defrost=";
+                  rpt += (id(defrost_mode).state ? 'T' : 'F');
 
+                  add_val("door_open_time", id(door_open_time).state);
+                  add_int("compressor_on_time", id(compressor_on_time).state);
+                  add_int("compressor_rpm", id(compressor_rpm).state);
+                  add_int("uptime", id(sys_uptime).state);
+                  add_val("ambient_temp", id(ambient_temp).state);
+                  add_val("compressor_fan_rpm", id(compressor_fan_rpm).state);
+                  add_val("compressor_temp", id(compressor_temp).state);
+                  add_val("freezer_target_temp", id(freezer_thermostat).target_temperature);
+                  add_val("freezer_temp", id(freezer_temp).state);
+                  add_val("freezer_temp_delta", id(freezer_temp_delta_per_hour).state);
+                  add_val("fridge_fan_speed", id(fridge_fan).state ? id(fridge_fan).speed : 0.0f);
+                  add_val("fridge_target_temp", id(fridge_thermostat).target_temperature);
+                  add_val("fridge_temp", id(fridge_temp).state);
+                  add_val("p_term", id(p_term));
+                  add_val("d_term", id(d_term));
+                  add_val("ff_term", id(ff_term));
+                  add_val("recovery_time_measured", id(compressor_recovery_time_measured_sensor).state);
+                  add_val("pd_p_multiplier", id(pd_p_multiplier_number).state);
+                  add_val("pd_d_multiplier_cooling", id(pd_d_multiplier_number).state);
+                  add_val("pd_d_multiplier_warming", id(pd_d_multiplier_warming_number).state);
+                  add_val("ambient_ff_multiplier", id(ambient_ff_multiplier_number).state);
+                  add_val("recovery_window", id(compressor_window_number).state);
 
-            add_int("compressor_on_time", id(compressor_on_time).state);
-            add_int("compressor_rpm", id(compressor_rpm).state);
-            add_int("uptime", id(sys_uptime).state);
-            add_val("ambient_temp", id(ambient_temp).state);
-            add_val("compressor_fan_rpm", id(compressor_fan_rpm).state);
-            add_val("compressor_temp", id(compressor_temp).state);
-            add_val("freezer_target_temp", id(freezer_thermostat).target_temperature);
-            add_val("freezer_temp", id(freezer_temp).state);
-            add_val("freezer_temp_delta", id(freezer_temp_delta_per_hour).state);
-            add_val("fridge_fan_speed", id(fridge_fan).state ? id(fridge_fan).speed : 0.0f);
-            add_val("fridge_target_temp", id(fridge_thermostat).target_temperature);
-            add_val("fridge_temp", id(fridge_temp).state);
-            add_val("p_term", id(p_term));
-            add_val("d_term", id(d_term));
-            add_val("ff_term", id(ff_term));
-            add_val("recovery_time_measured", id(compressor_recovery_time_measured_sensor).state);
-            add_val("pd_p_multiplier", id(pd_p_multiplier_number).state);
-            add_val("pd_d_multiplier_cooling", id(pd_d_multiplier_number).state);
-            add_val("pd_d_multiplier_warming", id(pd_d_multiplier_warming_number).state);
-            add_val("ambient_ff_multiplier", id(ambient_ff_multiplier_number).state);
-            add_val("recovery_window", id(compressor_window_number).state);
+                  if (rpt.length() > 1400) {
+                    ESP_LOGE("report_stats", "Telemetry string too long (%d bytes), potential truncation!", rpt.length());
+                  }
 
-            if (rpt.length() > 1400) {
-              ESP_LOGE("report_stats", "Telemetry string too long (%d bytes), potential truncation!", rpt.length());
-            }
-
-            ESP_LOGD("report_stats", "UDP: %s", rpt.c_str());
-            return std::vector<uint8_t>(rpt.begin(), rpt.end());
+                  ESP_LOGD("report_stats", "UDP: %s", rpt.c_str());
+                  return std::vector<uint8_t>(rpt.begin(), rpt.end());
 
 interval:
   # Update our temperature values in series with a short delay in between.
@@ -1279,6 +1314,7 @@ interval:
       - component.update: ambient_temp
       - delay: 1s
       - component.update: compressor_temp
+      - delay: 1s
       - script.execute: update_fridge_fan
       - script.execute: update_compressor
       - script.execute: report_stats

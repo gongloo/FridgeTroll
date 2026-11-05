@@ -35,7 +35,10 @@ esphome:
     version: "0.6.2"
   min_version: 2026.10.0
   on_boot:
-    - priority: 600
+    # Priority 700.0 runs after TemplateText restoration (800.0) but before Dallas
+    # component setup (600.0). This ensures saved 1-Wire addresses are applied to
+    # entities before bus discovery, preventing auto-assignment of a single address to all sensors.
+    - priority: 700.0
       then:
         - lambda: |-
             static const char *empty_addrs[] = {nullptr};
@@ -64,10 +67,6 @@ esphome:
         - script.execute: apply_sensor_addresses
         - script.execute: pet_fridge_watchdog
         - script.execute: pet_freezer_watchdog
-    - priority: -10
-      then:
-        - component.update: fridge_temp
-        - component.update: freezer_temp
 
 esp32:
   board: lolin_s3_mini
@@ -228,7 +227,14 @@ sensor:
           return x;
     on_value:
       then:
-        - script.execute: pet_fridge_watchdog
+        # Pet watchdog ONLY on valid sensor readings. A disconnected or bus-errored 1-Wire sensor
+        # publishes NAN. Petting only on !isnan(x) allows the 3.5-minute hardware watchdog to detect
+        # persistent sensor death and trigger an MCU reboot if unresolved.
+        - if:
+            condition:
+              lambda: "return !std::isnan(x);"
+            then:
+              - script.execute: pet_fridge_watchdog
 
   - platform: dallas_temp
     name: "Freezer"
@@ -246,7 +252,14 @@ sensor:
           return x;
     on_value:
       then:
-        - script.execute: pet_freezer_watchdog
+        # Pet watchdog ONLY on valid sensor readings. A disconnected or bus-errored 1-Wire sensor
+        # publishes NAN. Petting only on !isnan(x) allows the 3.5-minute hardware watchdog to detect
+        # persistent sensor death and trigger an MCU reboot if unresolved.
+        - if:
+            condition:
+              lambda: "return !std::isnan(x);"
+            then:
+              - script.execute: pet_freezer_watchdog
 
   - platform: pulse_counter
     name: "Compressor Cooling Fan"
@@ -953,12 +966,21 @@ script:
           if (id(manual_override).state) {
             return;
           }
-          if (id(fridge_thermostat).action != climate::CLIMATE_ACTION_COOLING) {
-            return;
-          }
           const float current_temp = id(fridge_temp).state;
           const float setpoint = id(fridge_thermostat).target_temperature;
-          if (std::isnan(current_temp) || std::isnan(setpoint)) return;
+
+          // If sensor is NaN, setpoint is NaN, or thermostat is not actively cooling,
+          // ensure the fridge circulation fan is turned off.
+          // Note: In ESPHome, ThermostatClimate automatically transitions to CLIMATE_ACTION_OFF
+          // when current_temperature is NaN. Evaluating this combined check guarantees the fan
+          // is safely stopped even when thermostat action has transitioned away from COOLING.
+          if (std::isnan(current_temp) || std::isnan(setpoint) ||
+              id(fridge_thermostat).action != climate::CLIMATE_ACTION_COOLING) {
+            if (id(fridge_fan).state) {
+              id(fridge_fan).turn_off().perform();
+            }
+            return;
+          }
 
           const float error = current_temp - setpoint;
           const float ramp_band = std::max(0.1f, id(fridge_fan_ramp_band_number).state);
@@ -1046,7 +1068,10 @@ script:
           const size_t history_limit = static_cast<size_t>(window_s / ${temp_update_interval_s}) + 1;
           const uint32_t now = millis();
 
+          static uint8_t consecutive_nan_ticks = 0;
+
           if(id(manual_override).state) {
+            consecutive_nan_ticks = 0;
             ESP_LOGW("update_compressor", "Manual override is on; skipping automatic speed update.");
             if (id(defrost_mode).state) {
               ESP_LOGW("update_compressor", "Manual override is on; disabling defrost.");
@@ -1058,9 +1083,24 @@ script:
 
           const float current_temp = id(freezer_temp).state;
           if (std::isnan(current_temp)) {
-            ESP_LOGE("update_compressor", "Freezer temperature is NaN; skipping automatic speed update.");
+            if (consecutive_nan_ticks < 255) consecutive_nan_ticks++;
+            ESP_LOGW("update_compressor", "Freezer temperature is NaN (consecutive: %u, threshold: 3).", consecutive_nan_ticks);
+            // Soft fail-safe: A transient read error (1 or 2 intervals) logs a warning and leaves
+            // the compressor at its current state. If freezer_temp is NaN for >= 3 consecutive intervals (45s),
+            // immediately shut off compressor and fridge fan to prevent freeze damage or runaway cooling
+            // while waiting for the 3.5-minute hardware watchdog to trigger an MCU reboot.
+            if (consecutive_nan_ticks >= 3) {
+              if (id(compressor).state) {
+                ESP_LOGE("update_compressor", "Freezer temperature persistently NaN for %u ticks! Emergency compressor shutoff.", consecutive_nan_ticks);
+                id(compressor).turn_off().perform();
+              }
+              if (id(fridge_fan).state) {
+                id(fridge_fan).turn_off().perform();
+              }
+            }
             return;
           }
+          consecutive_nan_ticks = 0;
 
           const float target_temp = id(defrost_mode).state ? id(defrost_target_temp).state : id(freezer_thermostat).target_temperature;
           const float error = current_temp - target_temp;

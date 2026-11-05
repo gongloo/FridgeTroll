@@ -1255,7 +1255,7 @@ script:
             const float safe_d = std::isnan((float)id(d_term)) ? 0.0f : (float)id(d_term);
             const int desired_speed = round((float)id(p_term) + safe_d + (float)id(ff_term));
             
-            // CONTROL ARCHITECTURE (Option B - Predictive Turn-On):
+            // CONTROL ARCHITECTURE (Predictive Turn-On):
             // Compressor turn-on is governed by desired_speed (P + D + FF). If high fridge fan demand
             // (fridge_fan_ff) or a rapid warming trend (d_term) produces desired_speed >= 1, the compressor
             // will start even if current_temp is slightly below target_temp (down to -overrun).

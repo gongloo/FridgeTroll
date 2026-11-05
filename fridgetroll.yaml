@@ -1,5 +1,6 @@
 substitutions:
   name: "fridgetroll"
+  timezone: "America/New_York"
   temp_update_interval_s: 15
   # Emergency absolute delta (degrees C) above target to trigger max speed
   compressor_emergency_delta: 3.0
@@ -136,11 +137,12 @@ select:
 
 ota:
   - platform: esphome
+    id: esphome_ota
 
 time:
   - platform: sntp
     id: sntp_time
-    timezone: "America/New_York"
+    timezone: ${timezone}
     on_time:
       - seconds: 0
         minutes: 0

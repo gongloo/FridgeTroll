@@ -4,15 +4,15 @@ This repository contains the ESPHome configuration and documentation for FridgeT
 
 ## Key Features
 
-- **Adaptive Compressor Control**: Logarithmic recovery profiler dynamically adjusts compressor RPM based on thermal load and target recovery time.
-- **Predictive Braking**: Lead compensation algorithm calculates future temperature trajectories to prevent overshoot and minimize cycling.
+- **Asymmetric PD + Feedforward Compressor Control**: Dynamic proportional-derivative algorithm with asymmetric cooling vs. warming derivative damping, ambient temperature feedforward, and fridge fan cooling feedforward for preemptive thermal load compensation.
+- **Proportional Fridge Fan Modulation**: Linearly modulates fridge circulation fan speed within a configurable temperature ramp band with dedicated freeze protection overrides.
 - **Freeze Protection**: Dedicated fridge monitoring prevents accidental freezing of fresh food by overriding compressor state.
 - **Intelligent Defrosting**: Automated nightly defrost cycles that adapt to natural compressor rest periods.
 - **Dynamic Configuration**: Configure Dallas sensor addresses and telemetry (Syslog/InfluxDB) directly via the web UI—no recompilation required.
 - **Stall Detection**: Automatically detects and corrects cooling stalls.
 - **Anti-Short-Cycle Protection**: Protects your compressor from rapid power cycles.
 - **Rich Telemetry**: Full integration with InfluxDB and Home Assistant.
-- **Web Installer**: Pre-built firmware installable directly from your browser.
+- **Web Installer & Package Support**: Install pre-compiled firmware directly from your browser, or import FridgeTroll as a centralized ESPHome package.
 
 ## Documentation & Installation
 

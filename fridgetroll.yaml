@@ -147,6 +147,12 @@ time:
         hours: 3
         then:
           - lambda: |-
+              // Do not run automated defrost if the freezer thermostat is turned OFF by the user.
+              if (id(freezer_thermostat).mode == climate::CLIMATE_MODE_OFF) {
+                ESP_LOGI("defrost", "Nightly defrost skipped (freezer thermostat is OFF).");
+                id(max_rest_duration_s) = 0;
+                return;
+              }
               if (id(max_rest_duration_s) < ${defrost_duration_s}) {
                 ESP_LOGI("defrost", "Nightly defrost triggered (max 24h rest was %.0fs, threshold %us).", id(max_rest_duration_s), ${defrost_duration_s});
                 id(defrost_mode).turn_on();
@@ -876,7 +882,10 @@ climate:
         mode: cool
     default_preset: Standard
 
-    cool_overrun: 1.5
+    # With min allowable setpoint at 2.0°C and emergency freeze protection low cutoff at 1.0°C,
+    # setting cool_overrun to 0.5°C ensures cooling stops at 1.5°C at minimum setpoint.
+    # This maintains a safe 0.5°C buffer above freeze protection while preventing fan short-cycling.
+    cool_overrun: 0.5
     cool_deadband: 0.0
 
     min_idle_time: 0s
@@ -1072,17 +1081,21 @@ script:
 
           if(id(manual_override).state) {
             consecutive_nan_ticks = 0;
+            temp_history.clear();
+            last_eval_time = 0;
+            defrosting_after_deep_chill = false;
             ESP_LOGW("update_compressor", "Manual override is on; skipping automatic speed update.");
             if (id(defrost_mode).state) {
               ESP_LOGW("update_compressor", "Manual override is on; disabling defrost.");
               id(defrost_mode).publish_state(false);
-              defrosting_after_deep_chill = false;
             }
             return;
           }
 
           const float current_temp = id(freezer_temp).state;
           if (std::isnan(current_temp)) {
+            temp_history.clear();
+            last_eval_time = 0;
             if (consecutive_nan_ticks < 255) consecutive_nan_ticks++;
             ESP_LOGW("update_compressor", "Freezer temperature is NaN (consecutive: %u, threshold: 3).", consecutive_nan_ticks);
             // Soft fail-safe: A transient read error (1 or 2 intervals) logs a warning and leaves
@@ -1104,6 +1117,15 @@ script:
 
           const float target_temp = id(defrost_mode).state ? id(defrost_target_temp).state : id(freezer_thermostat).target_temperature;
           const float error = current_temp - target_temp;
+
+          // Guard against stale temperature derivative history after sensor outages, reboots, or delays.
+          // If elapsed time exceeds 2x the evaluation interval, clear the window so a massive false
+          // derivative rate is not calculated across a wide time gap.
+          if (last_eval_time != 0 && (now - last_eval_time > 2 * kEvalIntervalMs)) {
+            ESP_LOGW("update_compressor", "Evaluation interval gap (%ums > %ums); clearing stale temp history.",
+                     static_cast<unsigned int>(now - last_eval_time), static_cast<unsigned int>(2 * kEvalIntervalMs));
+            temp_history.clear();
+          }
 
           // Update evaluation timing
           // Subtract 200ms to allow for minor ESPHome interval jitter
@@ -1172,7 +1194,10 @@ script:
           id(d_term) = NAN;
           id(ff_term) = NAN;
 
-          if (!id(defrost_mode).state) {
+          // Defrost post-chill rest state must persist until the compressor actually restarts.
+          // If cleared while the compressor is still off, subsequent intervals will wrongly add the
+          // 30-minute forced defrost rest into max_rest_duration_s, falsely skipping the next defrost.
+          if (id(compressor).state) {
             defrosting_after_deep_chill = false;
           }
 
@@ -1190,6 +1215,7 @@ script:
             if (in_deep_chill) {
               ESP_LOGI("defrost", "Freeze protection active during deep chill; transitioning to rest period early.");
               defrosting_after_deep_chill = true;
+              id(compressor_off_time).reset();
             }
           } else if (id(freezer_thermostat).action == climate::CLIMATE_ACTION_OFF &&
               !id(defrost_mode).state) {
@@ -1199,10 +1225,12 @@ script:
               ESP_LOGI("defrost", "Target temperature reached (%.1f°C); shutting compressor for %us.", target_temp, ${defrost_duration_s});
               next_compressor_speed = 0;
               defrosting_after_deep_chill = true;
+              id(compressor_off_time).reset();
             } else if (temp_history.size() >= history_limit && current_delta_per_hour >= ${defrost_thermal_limit_delta} && (now - deep_chill_start_ms) >= (${defrost_thermal_limit_grace_s} * 1000)) {
               ESP_LOGW("defrost", "Thermal limit reached (%.2f°C/h >= %.2f°C/h after %us); aborting deep chill.", current_delta_per_hour, (float)${defrost_thermal_limit_delta}, (unsigned int)((now - deep_chill_start_ms)/1000));
               next_compressor_speed = 0;
               defrosting_after_deep_chill = true;
+              id(compressor_off_time).reset();
             } else {
               next_compressor_speed = 5;
               if (current_speed != next_compressor_speed) {
@@ -1227,7 +1255,14 @@ script:
             const float safe_d = std::isnan((float)id(d_term)) ? 0.0f : (float)id(d_term);
             const int desired_speed = round((float)id(p_term) + safe_d + (float)id(ff_term));
             
-            // Hysteresis: reach overrun before shutting off compressor.
+            // CONTROL ARCHITECTURE (Option B - Predictive Turn-On):
+            // Compressor turn-on is governed by desired_speed (P + D + FF). If high fridge fan demand
+            // (fridge_fan_ff) or a rapid warming trend (d_term) produces desired_speed >= 1, the compressor
+            // will start even if current_temp is slightly below target_temp (down to -overrun).
+            // This preemptively counteracts heavy thermal loads and arrests temperature spikes at the expense
+            // of slightly shorter off-cycles. Note: During early turn-on, freezer_thermostat in the UI will
+            // display "Idle" (since error <= 0) while the physical compressor runs.
+            // When shutting off, the compressor enforces full hysteresis, running until error <= -overrun.
             const float overrun = id(freezer_thermostat).cool_overrun();
             if (error <= -overrun) {
               next_compressor_speed = 0;
@@ -1250,18 +1285,25 @@ script:
             max_error = NAN;
             return;
           }
-          if (std::isnan(max_error) && error > 0.0f) {
-            recovery_start_ms = millis();
-            max_error = error;
-          }
-          max_error = std::max(max_error, error);
-          if (current_temp <= target_temp && !std::isnan(max_error)) {
-            const float elapsed_hours = (millis() - recovery_start_ms) / 3600000.0f;
-            if (elapsed_hours > 0.05f && max_error > 0.5f) {
+
+          // Recovery time profiler: only track recovery during normal cooling cycles.
+          // Guard against defrost deep chill and compressor-off periods (anti-short-cycle delay, freeze protection).
+          if (id(defrost_mode).state || !id(compressor).state) {
+            max_error = NAN;
+          } else {
+            if (std::isnan(max_error) && error > 0.0f) {
+              recovery_start_ms = millis();
+              max_error = error;
+            }
+            max_error = std::max(max_error, error);
+            if (current_temp <= target_temp && !std::isnan(max_error)) {
+              const float elapsed_hours = (millis() - recovery_start_ms) / 3600000.0f;
+              if (elapsed_hours > 0.05f && max_error > 0.5f) {
                 id(compressor_recovery_time_measured_sensor).publish_state(elapsed_hours);
                 ESP_LOGI("recovery_profiler", "Cooling cycle complete. Took %.2f hours. Max error was %.2f°C.", elapsed_hours, max_error);
+              }
+              max_error = NAN;
             }
-            max_error = NAN;
           }
 
           // Check if the compressor needs an anti-short-cycle delay.

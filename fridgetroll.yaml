@@ -293,6 +293,7 @@ sensor:
       sorting_group_id: "compressor_stats"
     lambda: "return id(compressor).state;"
     accuracy_decimals: 0
+    state_class: measurement
     update_interval: ${temp_update_interval_s}s
     last_time:
       name: "Last Compressor On Time"
@@ -309,6 +310,7 @@ sensor:
       sorting_group_id: "compressor_stats"
     lambda: "return !id(compressor).state;"
     accuracy_decimals: 0
+    state_class: measurement
     update_interval: ${temp_update_interval_s}s
     last_time:
       name: "Last Compressor Off Time"
@@ -373,6 +375,11 @@ sensor:
     on_value:
       then:
         - lambda: |-
+            // If manual override is enabled, allow the operator full manual control of the cooling fan.
+            if (id(manual_override).state) {
+              return;
+            }
+
             constexpr float kHighCompressorTemp = 43.0f;
             constexpr float kMinFanSpeed = 0.0f; // Minimum fan speed %
             constexpr float kMaxFanSpeed = 100.0f; // Maximum fan speed %
@@ -444,7 +451,7 @@ text:
     id: fridge_temp_address_text
     icon: "mdi:identifier"
     optimistic: true
-    min_length: 18
+    min_length: 0
     max_length: 18
     restore_value: true
     update_interval: never
@@ -460,7 +467,7 @@ text:
     id: freezer_temp_address_text
     icon: "mdi:identifier"
     optimistic: true
-    min_length: 18
+    min_length: 0
     max_length: 18
     restore_value: true
     update_interval: never
@@ -476,7 +483,7 @@ text:
     id: compressor_temp_address_text
     icon: "mdi:identifier"
     optimistic: true
-    min_length: 18
+    min_length: 0
     max_length: 18
     restore_value: true
     update_interval: never
@@ -492,7 +499,7 @@ text:
     id: ambient_temp_address_text
     icon: "mdi:identifier"
     optimistic: true
-    min_length: 18
+    min_length: 0
     max_length: 18
     restore_value: true
     update_interval: never
@@ -508,7 +515,7 @@ text:
     id: syslog_ip_text
     icon: "mdi:console-network"
     optimistic: true
-    min_length: 7
+    min_length: 0
     max_length: 15
     restore_value: true
     update_interval: never
@@ -522,7 +529,7 @@ text:
     id: influxdb_host_text
     icon: "mdi:table-network"
     optimistic: true
-    min_length: 7
+    min_length: 0
     max_length: 15
     restore_value: true
     update_interval: never
@@ -756,11 +763,10 @@ switch:
     name: "Manual Override"
     id: manual_override
     icon: "mdi:cog-transfer"
-    restore_mode: RESTORE_DEFAULT_ON
+    restore_mode: RESTORE_DEFAULT_OFF
     optimistic: true
-    entity_category: "diagnostic"
     web_server:
-      sorting_group_id: "debug"
+      sorting_group_id: "command"
 
   - platform: template
     name: "Defrost Mode"
@@ -899,7 +905,11 @@ climate:
 
     idle_action:
       then:
-        - fan.turn_off: fridge_fan
+        - if:
+            condition:
+              switch.is_off: manual_override
+            then:
+              - fan.turn_off: fridge_fan
     cool_action:
       then:
         - script.execute: update_fridge_fan
@@ -975,6 +985,12 @@ script:
           if (id(manual_override).state) {
             return;
           }
+          if (strtoull(id(fridge_temp_address_text).state.c_str(), nullptr, 16) == 0) {
+            if (id(fridge_fan).state) {
+              id(fridge_fan).turn_off().perform();
+            }
+            return;
+          }
           const float current_temp = id(fridge_temp).state;
           const float setpoint = id(fridge_thermostat).target_temperature;
 
@@ -1044,7 +1060,10 @@ script:
           format: "Too long since last fridge watchdog pet!"
       - if:
           condition:
-            switch.is_off: manual_override
+            and:
+              - switch.is_off: manual_override
+              # Do not reboot if sensor address is unconfigured (addr == 0); prevents first-boot reboot loop
+              - lambda: 'return strtoull(id(fridge_temp_address_text).state.c_str(), nullptr, 16) != 0;'
           then:
             - button.press: restart_button
 
@@ -1058,7 +1077,10 @@ script:
           format: "Too long since last freezer watchdog pet!"
       - if:
           condition:
-            switch.is_off: manual_override
+            and:
+              - switch.is_off: manual_override
+              # Do not reboot if sensor address is unconfigured (addr == 0); prevents first-boot reboot loop
+              - lambda: 'return strtoull(id(freezer_temp_address_text).state.c_str(), nullptr, 16) != 0;'
           then:
             - button.press: restart_button
 
@@ -1089,6 +1111,17 @@ script:
               ESP_LOGW("update_compressor", "Manual override is on; disabling defrost.");
               id(defrost_mode).publish_state(false);
             }
+            return;
+          }
+
+          // Keep compressor idle if freezer sensor address is not yet provisioned.
+          // Safely de-energize compressor if it was left running from manual override.
+          if (strtoull(id(freezer_temp_address_text).state.c_str(), nullptr, 16) == 0) {
+            if (id(compressor).state) {
+              ESP_LOGW("update_compressor", "Freezer sensor address unconfigured; shutting down running compressor.");
+              id(compressor).turn_off().perform();
+            }
+            ESP_LOGD("update_compressor", "Freezer sensor address unconfigured; staying idle.");
             return;
           }
 

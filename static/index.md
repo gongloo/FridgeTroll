@@ -33,19 +33,55 @@ To build the FridgeTroll hardware interface, you will need:
 
 ## Interfacing with the SECOP Controller
 
-The SECOP controller provides several pins that need to be interfaced with the ESP32. Due to voltage differences (the SECOP can Output 12V/24V on some pins), **opto-isolation is required** for the compressor control signals and the door switch to protect the ESP32.
+The SECOP controller provides several terminals that need to be interfaced with the ESP32. Due to voltage differences (the SECOP operates on 12V/24V and supplies pull-up voltages), **opto-isolation is required** for the compressor control signals and the door switch to protect the ESP32.
 
-### 1. Compressor Enable (Pin T)
+### SECOP Terminal Functions
 
-The compressor turns on when Pin C is connected to Pin T (or driven by a PWM signal).
+On standard SECOP / Danfoss variable-speed electronic units (such as the 101N2000):
+- **C (Common / Control)**: Common control supply voltage and reference line.
+- **T (Thermostat)**: Compressor enable input. Bridging Terminal `C` to Terminal `T` commands the compressor to start. Opening `C` to `T` turns it off.
+- **P (Programming / Speed PWM)**: Variable speed control input. Pulsing an open-collector signal between `P` and `C` modulates compressor RPM.
+- **D (Diagnostic LED)**: Output terminal for fault diagnostic codes (connected via LED to `+`).
 
-- **Circuit**: Use a PC817 optocoupler. Connect the ESP32's `compressor_enable_pin` to the optocoupler's anode (via a current-limiting resistor). Connect the optocoupler's collector to the SECOP Pin C, and the emitter to Ground.
+### Wiring Schematic
 
-### 2. Compressor PWM (Pin P)
+```
+           +---------------------------------------------+
+           |           SECOP Electronic Unit             |
+           |                                             |
+           |   (+) Battery Positive (12V/24V)            |
+           |   (-) Battery Ground (GND)                  |
+           |   (C) Control Common ----+                  |
+           |   (P) Speed PWM <--------|----+             |
+           |   (T) Thermostat Run <---|----|----+        |
+           |   (D) Diagnostic LED     |    |    |        |
+           +--------------------------|----|----|--------+
+                                      |    |    |
+                     PC817 [PWM]      |    |    |
+                    +------------+    |    |    |
+ESP32 GPIO10 -------| 1 (A) 4 (C)|---------+    |   (Collector to Terminal P)
+ESP32 GND   --------| 2 (K) 3 (E)|----+         |   (Emitter to Terminal C)
+                    +------------+    |         |
+                                      |         |
+                    PC817 [Enable]    |         |
+                    +------------+    |         |
+ESP32 GPIO12 -------| 1 (A) 4 (C)|--------------+   (Collector to Terminal T)
+ESP32 GND   --------| 2 (K) 3 (E)|----+             (Emitter to Terminal C)
+                    +------------+
+```
 
-This pin dictates the compressor speed.
+### 1. Compressor Enable (SECOP Terminals T & C)
 
-- **Circuit**: Use a PC817 optocoupler. Connect the ESP32's `compressor_pwm_pin` to the optocoupler's anode (via a resistor). Connect the optocoupler's collector to Pin T and the emitter to Ground (Pin P).
+The compressor turns on when Terminal `T` is connected to Common Terminal `C`.
+
+- **Circuit**: Use a PC817 optocoupler. Connect the ESP32's `compressor_enable_pin` (GPIO12) to the optocoupler's anode (Pin 1) via a current-limiting resistor (e.g., 330Ω–1kΩ), and connect ESP32 Ground to the cathode (Pin 2). Connect the optocoupler's collector (Pin 4) to SECOP Terminal `T`, and the emitter (Pin 3) to SECOP Terminal `C`.
+
+### 2. Compressor Speed PWM (SECOP Terminals P & C)
+
+Dictates the compressor speed (2,000 to 3,500 RPM) via a 200 Hz open-collector PWM duty cycle.
+
+- **Circuit**: Use a PC817 optocoupler. Connect the ESP32's `compressor_pwm_pin` (GPIO10) to the optocoupler's anode (Pin 1) via a resistor (e.g., 330Ω–1kΩ), and connect ESP32 Ground to the cathode (Pin 2). Connect the optocoupler's collector (Pin 4) to SECOP Terminal `P`, and the emitter (Pin 3) to SECOP Terminal `C`.
+- **Power Optimization**: When the compressor is off, FridgeTroll automatically sets the PWM duty cycle to 0.0%, de-energizing the optocoupler LED to conserve energy and prevent optocoupler aging.
 
 ### 3. Compressor Fan
 
@@ -125,43 +161,58 @@ FridgeTroll can send high-frequency telemetry to InfluxDB and system logs to a S
 
 ## 3. Tuning Performance
 
-The **Settings** section allows you to fine-tune the cooling algorithm without reflashing:
+The **Settings** section allows you to fine-tune the cooling algorithms and operational limits directly from the Web UI or Home Assistant without reflashing:
 
-- **Target Recovery Time**: Sets how aggressively the compressor should ramp up to return to target temperature.
-- **Thermal Prediction Lead**: Adjusts the "look-ahead" time for predictive braking to prevent overshoot.
-- **Recovery Tolerance**: Defines the allowed deviation from the target cooling rate before adjusting compressor speed.
-- **Recovery Evaluation Window**: The duration of history used to calculate the real-time cooling delta.
-- **Compressor Speed Min Interval**: Prevents excessive oscillation by enforcing a minimum time between speed changes.
+### Compressor Control (Asymmetric PD + Feedforward)
+FridgeTroll regulates freezer temperature using an asymmetric Proportional-Derivative (PD) controller augmented by ambient and circulation fan feedforward terms:
+
+- **Proportional P-Multiplier** (`pd_p_multiplier_number`): Scales compressor speed proportionally to the positive temperature error above target. Increasing this produces a more aggressive speed boost when the freezer warms up.
+- **Derivative Cooling D-Multiplier** (`pd_d_multiplier_number`): Acts as a dynamic brake while actively cooling. When the compartment is chilling rapidly, this derivative term throttles the compressor speed down in advance to prevent undershoot and freezing.
+- **Derivative Warming D-Multiplier** (`pd_d_multiplier_warming_number`): Detects rapid warming trajectories (such as warm food loading or extended door openings) and ramps up compressor RPM to arrest temperature rise.
+- **Ambient Feedforward Multiplier & Threshold** (`ambient_ff_multiplier_number`, `ambient_ff_threshold_number`): When the ambient temperature around the refrigerator exceeds this threshold, a feedforward offset is added to compressor RPM to compensate for heightened thermal conduction through the cabinet walls.
+- **Recovery Evaluation Window** (`compressor_window_number`): Time window (in seconds) of temperature history used to calculate the real-time cooling/warming rate (°C/h).
+- **Compressor Speed Min Interval** (`compressor_speed_change_interval_number`): Minimum duration between compressor speed changes to prevent rapid modulation and controller wear.
+
+### Fridge Fan Circulation & Freeze Protection
+- **Fridge Fan Min Speed** (`fridge_fan_min_speed_number`): The minimum baseline speed percentage when the fridge thermostat calls for cooling.
+- **Fridge Fan Max Speed** (`fridge_fan_max_speed_number`): The maximum speed percentage when the fridge compartment temperature is significantly above setpoint.
+- **Fridge Fan Ramp Band** (`fridge_fan_ramp_band_number`): The temperature window above setpoint over which the fan speed is proportionally ramped from min to max.
+- **Freeze Protection**: If fridge compartment temperature drops to ≤ 1.0°C, the compressor is forced off unconditionally until the fridge warms back to ≥ 1.5°C, guaranteeing fresh food never freezes.
+
+### Defrost Management
+- **Defrost Target** (`defrost_target_temp`): The target freezer temperature during the pre-defrost "deep chill" cycle, ensuring stored items remain safely frozen during the subsequent rest phase.
 
 ## Advanced: ESPHome Package Integration
 
-If you manage your smart home devices through a centralized ESPHome dashboard or configuration directory, you can cleanly integrate FridgeTroll as an **ESPHome Package**. This allows you to compile from source, keep your custom credentials secure in a centralized `secrets.yaml`, and disable the standalone Improv provisioning service since credentials are pre-configured.
+If you manage your smart home devices through a centralized ESPHome dashboard or configuration directory, you can cleanly integrate FridgeTroll as an **ESPHome Package**. This allows you to compile from source, keep your custom credentials secure in a centralized `secrets.yaml`, configure your local timezone, and disable the standalone Improv provisioning service since credentials are pre-configured.
 
 ### Example Configuration (`ESPHome/config/fridgetroll.yaml`)
 
-To extend FridgeTroll as a package and override Wi-Fi, API, and OTA configurations:
+To extend FridgeTroll as a package and override Wi-Fi, API, timezone, and OTA configurations:
 
 ```yaml
+substitutions:
+  # Optionally override timezone or device name
+  timezone: "America/Chicago"
+
 packages:
   # Reference the base fridgetroll.yaml package file
   fridgetroll: !include ../../FridgeTroll/fridgetroll.yaml
 
 # Remove Improv Serial and Improv Wi-Fi provisioning components (not needed for centralized configs)
 improv_serial: !remove
-esp32_improv:
-  !remove # Supply your network credentials from your central secrets.yaml
+esp32_improv: !remove
 
-
+# Supply your network credentials from your central secrets.yaml
 wifi:
   ssid: !secret wifi_ssid
   password: !secret wifi_password
 
 ota:
-  - platform: esphome
+  - id: !extend esphome_ota
     password: !secret ota_password
 
 api:
-  reboot_timeout: 0s
   encryption:
     key: !secret api_encryption_key
 ```

@@ -320,7 +320,16 @@ sensor:
     update_interval: never # Updated from compressor fan
     on_value:
       - lambda: |-
-          if (x < 2000) return;
+          if (x < 2000) {
+            // De-energize the PC817 optocoupler IR LED when compressor is commanded off.
+            // While the SECOP controller requires an active PWM signal during operation
+            // to hold variable speed, opening Pin T stops the compressor entirely. Shutting
+            // off the 200Hz PWM output eliminates quiescent optocoupler LED power consumption
+            // and prevents LED wear/aging while the compressor is idle.
+            ESP_LOGD("compressor_rpm", "Compressor off (rpm < 2000), de-energizing PWM output to 0.0.");
+            id(compressor_pwm).set_level(0.0f);
+            return;
+          }
           float ratio = (x - 2000.0) / 2000.0;
           if (ratio < 0) ratio = 0;
           if (ratio > 1) ratio = 1;
@@ -345,9 +354,9 @@ sensor:
     on_value:
       then:
         - lambda: |-
-            constexpr float kHighCompressorTemp = 43;
-            constexpr float kMinFanSpeed = 0.0; // Minimum fan speed %
-            constexpr float kMaxFanSpeed = 100.0; // Maximum fan speed %
+            constexpr float kHighCompressorTemp = 43.0f;
+            constexpr float kMinFanSpeed = 0.0f; // Minimum fan speed %
+            constexpr float kMaxFanSpeed = 100.0f; // Maximum fan speed %
 
             const float comp_temp = x;
             const float amb_temp = id(ambient_temp).state;
@@ -359,10 +368,21 @@ sensor:
               return;
             }
 
+            // CRITICAL HARDWARE SAFETY: If the compressor temperature is at or above
+            // kHighCompressorTemp, run the cooling fan at 100% unconditionally.
+            // Checking this first ensures thermal protection even in high ambient conditions
+            // where (comp_temp - amb_temp) might otherwise be smaller than min_delta.
+            if (comp_temp >= kHighCompressorTemp) {
+              auto call = id(compressor_cooling_fan).turn_on();
+              call.set_speed(100);
+              call.perform();
+              return;
+            }
+
             const float delta = comp_temp - amb_temp;
 
             // Fan curve configuration (Delta T from ambient)
-            const float min_delta = 5.0; // Fan starts here
+            const float min_delta = 5.0f; // Fan starts ramping here
             const float max_delta = std::min(15.0f, kHighCompressorTemp - amb_temp); // Fan at max speed here
 
             if (delta < min_delta) {
@@ -372,11 +392,15 @@ sensor:
               return;
             }
 
-            // Linear interpolation.
-            const float speed_factor = ((delta - min_delta) / (max_delta - min_delta));
+            // Note: Since comp_temp < kHighCompressorTemp (43°C) and delta >= min_delta (5°C),
+            // it follows that (kHighCompressorTemp - amb_temp) > (comp_temp - amb_temp) >= 5°C,
+            // which mathematically guarantees max_delta > min_delta.
+            // We guard denom with std::max(0.1f, ...) as defensive protection against potential future constant tweaks.
+            const float denom = std::max(0.1f, max_delta - min_delta);
+            const float speed_factor = (delta - min_delta) / denom;
             const float speed_percent = kMinFanSpeed + (kMaxFanSpeed - kMinFanSpeed) * speed_factor;
             auto call = id(compressor_cooling_fan).turn_on();
-            call.set_speed(std::min(100.0f, speed_percent));
+            call.set_speed(std::clamp(speed_percent, kMinFanSpeed, kMaxFanSpeed));
             call.perform();
 
   - platform: dallas_temp
@@ -941,6 +965,15 @@ script:
 
           float min_speed = id(fridge_fan_min_speed_number).state;
           float max_speed = id(fridge_fan_max_speed_number).state;
+          if (std::isnan(min_speed)) min_speed = 20.0f;
+          if (std::isnan(max_speed)) max_speed = 100.0f;
+
+          // Guard against configuration error where min_speed > max_speed.
+          // In C++, std::clamp requires lo <= hi; calling std::clamp with inverted
+          // bounds triggers undefined behavior.
+          if (min_speed > max_speed) {
+            std::swap(min_speed, max_speed);
+          }
 
           float speed_pct = min_speed;
           if (error > 0.0f) {
@@ -1209,7 +1242,8 @@ script:
 
             if (!allow_change) {
                ESP_LOGD("update_compressor", "Compressor speed change deferred (last change %us ago, min interval %us).", 
-                        (now - last_compressor_speed_change) / 1000, min_interval_ms / 1000);
+                        static_cast<unsigned int>((now - last_compressor_speed_change) / 1000),
+                        static_cast<unsigned int>(min_interval_ms / 1000));
                return;
             }
 

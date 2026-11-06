@@ -813,7 +813,10 @@ binary_sensor:
           id: onboard_rgb_light
       - component.update: door_open_time # Sync final duration.
       - script.execute: report_stats
-      # Sync zero immediately for our eternal triggers/monitoring.
+      # Allow door_open_time->loop() to process the falling edge (last_state_ = false)
+      # before resetting, preventing a non-zero millisecond residual from being published
+      # while the door is closed, and spacing out the UDP telemetry packets.
+      - delay: 20ms
       - sensor.duty_time.reset: door_open_time
       - script.execute: report_stats
 

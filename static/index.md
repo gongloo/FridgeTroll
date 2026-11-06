@@ -200,7 +200,7 @@ packages:
 
 # Remove Improv Serial and Improv Wi-Fi provisioning components (not needed for centralized configs)
 improv_serial: !remove
-esp32_improv: !remove
+improv_ble: !remove
 
 # Supply your network credentials from your central secrets.yaml
 wifi:

@@ -86,7 +86,7 @@ api:
 
 improv_serial:
 
-esp32_improv:
+improv_ble:
   authorizer: none
 
 captive_portal:
@@ -987,7 +987,7 @@ button:
 light:
   - platform: esp32_rmt_led_strip
     chipset: WS2812
-    rgb_order: GRB
+    channel_colors: GRB
     pin: ${rgb_pin}
     num_leds: 1
     name: "Onboard RGB"

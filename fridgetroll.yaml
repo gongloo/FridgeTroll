@@ -945,7 +945,10 @@ climate:
 
     min_idle_time: 0s
     min_cooling_off_time: ${compressor_anti_short_cycle_s}s
-    min_cooling_run_time: ${compressor_anti_short_cycle_s}s
+    # Compressor anti-short-cycle protection is enforced in update_compressor.
+    # Setting min_cooling_run_time to 0s ensures the thermostat action immediately
+    # reflects the OFF state without holding action: cooling for 180s.
+    min_cooling_run_time: 0s
 
     visual:
       min_temperature: -20
@@ -956,6 +959,9 @@ climate:
     cool_action: []
 
     on_control:
+      # A 10ms delay allows ThermostatClimate::control() to finish committing mode,
+      # target_temperature, and action before update_compressor evaluates them.
+      - delay: 10ms
       - script.execute: update_compressor
 
 button:
@@ -1286,8 +1292,9 @@ script:
               defrosting_after_deep_chill = true;
               id(compressor_off_time).reset();
             }
-          } else if (id(freezer_thermostat).action == climate::CLIMATE_ACTION_OFF &&
-              !id(defrost_mode).state) {
+          } else if ((id(freezer_thermostat).mode == climate::CLIMATE_MODE_OFF ||
+                      id(freezer_thermostat).action == climate::CLIMATE_ACTION_OFF) &&
+                     !id(defrost_mode).state) {
             next_compressor_speed = 0;
           } else if (in_deep_chill) {
             if (current_temp <= target_temp) {

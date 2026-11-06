@@ -1,4 +1,3 @@
-# CHANGEME: Set these variable to your liking
 title: FridgeTroll
-description: ESPHome-based smart controller for SECOP compressor-driven refrigerators, providing advanced temperature management, stall detection, and telemetry.
+description: ESPHome-based smart controller for SECOP compressor-driven refrigerators, providing advanced temperature management, automated defrost, and telemetry.
 theme: jekyll-theme-slate

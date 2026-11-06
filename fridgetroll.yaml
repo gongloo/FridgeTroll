@@ -30,7 +30,7 @@ substitutions:
 
 esphome:
   name: ${name}
-  comment: "Smart refrigerator controller providing advanced temperature management, stall detection, and telemetry"
+  comment: "Smart refrigerator controller providing advanced temperature management, automated defrost, and telemetry"
   project:
     name: "gongloo.${name}"
     version: "0.6.2"

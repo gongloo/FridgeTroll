@@ -1,6 +1,6 @@
 # FridgeTroll
 
-An ESPHome-based smart controller for SECOP compressor-driven refrigerators, providing advanced temperature management, stall detection, and telemetry.
+An ESPHome-based smart controller for SECOP compressor-driven refrigerators, providing advanced temperature management, automated defrost, and telemetry.
 
 ## Overview
 
@@ -78,7 +78,7 @@ The compressor turns on when Terminal `T` is connected to Common Terminal `C`.
 
 ### 2. Compressor Speed PWM (SECOP Terminals P & C)
 
-Dictates the compressor speed (2,000 to 3,500 RPM) via a 200 Hz open-collector PWM duty cycle.
+Dictates the compressor speed (2,000 to 4,000 RPM) via a 200 Hz open-collector PWM duty cycle.
 
 - **Circuit**: Use a PC817 optocoupler. Connect the ESP32's `compressor_pwm_pin` (GPIO10) to the optocoupler's anode (Pin 1) via a resistor (e.g., 330Ω–1kΩ), and connect ESP32 Ground to the cathode (Pin 2). Connect the optocoupler's collector (Pin 4) to SECOP Terminal `P`, and the emitter (Pin 3) to SECOP Terminal `C`.
 - **Power Optimization**: When the compressor is off, FridgeTroll automatically sets the PWM duty cycle to 0.0%, de-energizing the optocoupler LED to conserve energy and prevent optocoupler aging.
@@ -87,7 +87,7 @@ Dictates the compressor speed (2,000 to 3,500 RPM) via a 200 Hz open-collector P
 
 Controls the cooling fan for the compressor itself.
 
-- **Circuit**: The Noctua PWM fan can be driven directly by the ESP32. Connect the 12V and Ground pins of the fan to a 12V power supply and common Ground. Connect the fan's PWM pin directly to the ESP32's `fan_pwm_pin`. Connect the fan's tachometer pin directly to the ESP32's `fan_speed_pin` (the ESP32 will handle the pull-up internally).
+- **Circuit**: The Noctua PWM fan can be driven directly by the ESP32. Connect the 12V and Ground pins of the fan to a 12V power supply and common Ground. Connect the fan's PWM pin directly to the ESP32's `compressor_fan_pwm_pin`. Connect the fan's tachometer pin directly to the ESP32's `compressor_fan_speed_pin` (the ESP32 will handle the pull-up internally).
 
 ### 4. Door Switch
 
@@ -156,8 +156,7 @@ FridgeTroll can send high-frequency telemetry to InfluxDB and system logs to a S
 - **Syslog IP / Port**: Enter the destination IP address and port (default 514) for your Syslog collector.
 - **InfluxDB IP / Port**: Enter the destination IP address and port (default 8089) for your InfluxDB instance. FridgeTroll uses the InfluxDB UDP listener (Line Protocol).
 
-> [!IMPORTANT]
-> Changes to UDP settings require a device restart to take effect. Use the **Restart** button in the **Host** section after saving your changes.
+> **Important:** Changes to UDP settings require a device restart to take effect. Use the **Restart** button in the **Host** section after saving your changes.
 
 ## 3. Tuning Performance
 

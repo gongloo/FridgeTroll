@@ -9,7 +9,6 @@ This repository contains the ESPHome configuration and documentation for FridgeT
 - **Freeze Protection**: Dedicated fridge monitoring prevents accidental freezing of fresh food by overriding compressor state.
 - **Intelligent Defrosting**: Automated nightly defrost cycles that adapt to natural compressor rest periods.
 - **Dynamic Configuration**: Configure Dallas sensor addresses and telemetry (Syslog/InfluxDB) directly via the web UI—no recompilation required.
-- **Stall Detection**: Automatically detects and corrects cooling stalls.
 - **Anti-Short-Cycle Protection**: Protects your compressor from rapid power cycles.
 - **Rich Telemetry**: Full integration with InfluxDB and Home Assistant.
 - **Web Installer & Package Support**: Install pre-compiled firmware directly from your browser, or import FridgeTroll as a centralized ESPHome package.

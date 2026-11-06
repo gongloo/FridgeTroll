@@ -38,6 +38,7 @@ The SECOP controller provides several terminals that need to be interfaced with 
 ### SECOP Terminal Functions
 
 On standard SECOP / Danfoss variable-speed electronic units (such as the 101N2000):
+
 - **C (Common / Control)**: Common control supply voltage and reference line.
 - **T (Thermostat)**: Compressor enable input. Bridging Terminal `C` to Terminal `T` commands the compressor to start. Opening `C` to `T` turns it off.
 - **P (Programming / Speed PWM)**: Variable speed control input. Pulsing an open-collector signal between `P` and `C` modulates compressor RPM.
@@ -156,13 +157,14 @@ FridgeTroll can send high-frequency telemetry to InfluxDB and system logs to a S
 - **Syslog IP / Port**: Enter the destination IP address and port (default 514) for your Syslog collector.
 - **InfluxDB IP / Port**: Enter the destination IP address and port (default 8089) for your InfluxDB instance. FridgeTroll uses the InfluxDB UDP listener (Line Protocol).
 
-> **Important:** Changes to UDP settings require a device restart to take effect. Use the **Restart** button in the **Host** section after saving your changes.
+> **Important:** Changes to InfluxDB UDP settings apply immediately, but Syslog configuration changes require a device restart to take effect. Use the **Restart** button in the **Host** section after updating Syslog settings.
 
 ## 3. Tuning Performance
 
 The **Settings** section allows you to fine-tune the cooling algorithms and operational limits directly from the Web UI or Home Assistant without reflashing:
 
 ### Compressor Control (Asymmetric PD + Feedforward)
+
 FridgeTroll regulates freezer temperature using an asymmetric Proportional-Derivative (PD) controller augmented by ambient and circulation fan feedforward terms:
 
 - **Proportional P-Multiplier** (`pd_p_multiplier_number`): Scales compressor speed proportionally to the positive temperature error above target. Increasing this produces a more aggressive speed boost when the freezer warms up.
@@ -173,12 +175,14 @@ FridgeTroll regulates freezer temperature using an asymmetric Proportional-Deriv
 - **Compressor Speed Min Interval** (`compressor_speed_change_interval_number`): Minimum duration between compressor speed changes to prevent rapid modulation and controller wear.
 
 ### Fridge Fan Circulation & Freeze Protection
+
 - **Fridge Fan Min Speed** (`fridge_fan_min_speed_number`): The minimum baseline speed percentage when the fridge thermostat calls for cooling.
 - **Fridge Fan Max Speed** (`fridge_fan_max_speed_number`): The maximum speed percentage when the fridge compartment temperature is significantly above setpoint.
 - **Fridge Fan Ramp Band** (`fridge_fan_ramp_band_number`): The temperature window above setpoint over which the fan speed is proportionally ramped from min to max.
 - **Freeze Protection**: If fridge compartment temperature drops to ≤ 1.0°C, the compressor is forced off unconditionally until the fridge warms back to ≥ 1.5°C, guaranteeing fresh food never freezes.
 
 ### Defrost Management
+
 - **Defrost Target** (`defrost_target_temp`): The target freezer temperature during the pre-defrost "deep chill" cycle, ensuring stored items remain safely frozen during the subsequent rest phase.
 
 ## Advanced: ESPHome Package Integration
@@ -200,9 +204,9 @@ packages:
 
 # Remove Improv Serial and Improv Wi-Fi provisioning components (not needed for centralized configs)
 improv_serial: !remove
-improv_ble: !remove
+improv_ble:
+  !remove # Supply your network credentials from your central secrets.yaml
 
-# Supply your network credentials from your central secrets.yaml
 wifi:
   ssid: !secret wifi_ssid
   password: !secret wifi_password

@@ -68,6 +68,13 @@ esphome:
         - script.execute: apply_sensor_addresses
         - script.execute: pet_fridge_watchdog
         - script.execute: pet_freezer_watchdog
+    # Priority 500.0 runs after Dallas component setup (600.0). If exactly one physical sensor is
+    # connected on the bus, ESPHome's setup() automatically binds devices[0] to any Dallas component
+    # with address_ == 0. Re-running apply_sensor_addresses here resets unconfigured sensors (addr == 0)
+    # back to address_ = 0 so they do not inadvertently poll the bus.
+    - priority: 500.0
+      then:
+        - script.execute: apply_sensor_addresses
 
 esp32:
   board: lolin_s3_mini
@@ -1040,17 +1047,21 @@ script:
   - id: apply_sensor_addresses
     then:
       - lambda: |-
-          uint64_t addr = strtoull(id(fridge_temp_address_text).state.c_str(), nullptr, 16);
-          if (addr > 0) id(fridge_temp).set_address(addr);
+          auto apply_addr = [](dallas_temp::DallasTemperatureSensor *sensor, const std::string &addr_str) {
+            uint64_t addr = strtoull(addr_str.c_str(), nullptr, 16);
+            sensor->set_address(addr);
+            // If the sensor address is cleared or unconfigured (0), DallasTemperatureSensor::update()
+            // skips reading and never publishes an update. Publish NAN immediately so stale readings
+            // do not persist in state.
+            if (addr == 0 && !std::isnan(sensor->state)) {
+              sensor->publish_state(NAN);
+            }
+          };
 
-          addr = strtoull(id(freezer_temp_address_text).state.c_str(), nullptr, 16);
-          if (addr > 0) id(freezer_temp).set_address(addr);
-
-          addr = strtoull(id(compressor_temp_address_text).state.c_str(), nullptr, 16);
-          if (addr > 0) id(compressor_temp).set_address(addr);
-
-          addr = strtoull(id(ambient_temp_address_text).state.c_str(), nullptr, 16);
-          if (addr > 0) id(ambient_temp).set_address(addr);
+          apply_addr(id(fridge_temp), id(fridge_temp_address_text).state);
+          apply_addr(id(freezer_temp), id(freezer_temp_address_text).state);
+          apply_addr(id(compressor_temp), id(compressor_temp_address_text).state);
+          apply_addr(id(ambient_temp), id(ambient_temp_address_text).state);
 
   - id: pet_fridge_watchdog
     mode: restart # Restarting kills the previous delay
@@ -1222,7 +1233,8 @@ script:
 
           // Freeze protection logic.
           static bool freeze_protection_active = false;
-          if (!std::isnan(id(fridge_temp).state)) {
+          const bool fridge_configured = (strtoull(id(fridge_temp_address_text).state.c_str(), nullptr, 16) != 0);
+          if (fridge_configured && !std::isnan(id(fridge_temp).state)) {
             if (id(fridge_temp).state <= ${fridge_freeze_protection_low}) {
               if (!freeze_protection_active) {
                 ESP_LOGW("update_compressor", "Freeze protection ACTIVE (Fridge: %.2f°C <= %.2f°C).", id(fridge_temp).state, ${fridge_freeze_protection_low});
@@ -1233,6 +1245,13 @@ script:
                 ESP_LOGI("update_compressor", "Freeze protection DEACTIVATED (Fridge: %.2f°C >= %.2f°C).", id(fridge_temp).state, ${fridge_freeze_protection_high});
                 freeze_protection_active = false;
               }
+            }
+          } else {
+            // Reset freeze protection if the fridge sensor address is unconfigured or sensor reads NaN.
+            // This prevents a latched lockout if an address was cleared or incorrectly mapped during provisioning.
+            if (freeze_protection_active) {
+              ESP_LOGI("update_compressor", "Freeze protection RESET (fridge sensor unconfigured or NaN).");
+              freeze_protection_active = false;
             }
           }
 

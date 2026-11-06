@@ -1131,6 +1131,10 @@ script:
           static bool defrosting_after_deep_chill = false;
           static bool prev_defrost_mode = false;
           static uint32_t deep_chill_start_ms = 0;
+          // Recovery time profiler state: declared at top level so manual override
+          // can reset state even when returning early.
+          static uint32_t recovery_start_ms = 0;
+          static float max_error = NAN;
 
           // Sliding window state
           static std::vector<float> temp_history;
@@ -1148,6 +1152,10 @@ script:
             last_eval_time = 0;
             defrosting_after_deep_chill = false;
             prev_defrost_mode = false;
+            // Reset recovery time profiler so manual compressor operation does not leave
+            // a stale peak error or start timestamp when returning to automatic control.
+            recovery_start_ms = 0;
+            max_error = NAN;
             ESP_LOGW("update_compressor", "Manual override is on; skipping automatic speed update.");
             if (id(defrost_mode).state) {
               ESP_LOGW("update_compressor", "Manual override is on; disabling defrost.");
@@ -1346,7 +1354,13 @@ script:
 
             // Feed forward
             const float fridge_fan_ff = id(fridge_fan).state ? (id(fridge_fan).speed / 100.0f * ${fridge_fan_ff_multiplier}) : 0.0f;
-            const float amb_ff = std::max(0.0f, id(ambient_temp).state - id(ambient_ff_threshold_number).state) * id(ambient_ff_multiplier_number).state;
+            const float amb_temp = id(ambient_temp).state;
+            // Explicitly guard against NaN ambient temperature. While std::max(0.0f, NAN) evaluates to 0.0f
+            // under IEEE-754 due to (0.0f < NAN) being false, an explicit check avoids compiler-specific
+            // optimization quirks (e.g. -ffast-math) and keeps behavior deterministic if sensor is disconnected.
+            const float amb_ff = (!std::isnan(amb_temp))
+                ? std::max(0.0f, amb_temp - id(ambient_ff_threshold_number).state) * id(ambient_ff_multiplier_number).state
+                : 0.0f;
             id(ff_term) = fridge_fan_ff + amb_ff;
 
             const float safe_d = std::isnan((float)id(d_term)) ? 0.0f : (float)id(d_term);
@@ -1370,8 +1384,6 @@ script:
           }
 
           // Turn off compressor as necessary, tracking max error and recovery time.
-          static uint32_t recovery_start_ms = 0;
-          static float max_error = NAN;
           if (next_compressor_speed == 0) {
             // No more cooling! Turn off the compressor.
             if (id(compressor).state) {

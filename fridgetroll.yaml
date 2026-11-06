@@ -29,14 +29,14 @@ substitutions:
   fridge_fan_pin: GPIO18
 
   # Source location of custom external components
-  influxdb_udp_component_source: "github://gongloo/esphome-influxdb-udp@v1.0.0"
+  influxdb_udp_component_source: "github://gongloo/esphome-influxdb-udp@v1.1.0"
 
 esphome:
   name: ${name}
   comment: "Smart refrigerator controller providing advanced temperature management, automated defrost, and telemetry"
   project:
     name: "gongloo.${name}"
-    version: "0.7.0"
+    version: "0.7.1"
   min_version: 2026.10.0
   on_boot:
     # Priority 700.0 runs after TemplateText restoration (800.0) but before Dallas
@@ -1486,26 +1486,17 @@ influxdb_udp:
         compressor_fan_rpm: compressor_fan_rpm
         compressor_temp: compressor_temp
         freezer_target_temp:
-          type: float
           lambda: "return id(freezer_thermostat).target_temperature;"
         freezer_temp: freezer_temp
         freezer_temp_delta: freezer_temp_delta_per_hour
         fridge_fan_speed:
-          type: float
           lambda: "return id(fridge_fan).state ? id(fridge_fan).speed : 0.0f;"
         fridge_target_temp:
-          type: float
           lambda: "return id(fridge_thermostat).target_temperature;"
         fridge_temp: fridge_temp
-        p_term:
-          type: float
-          lambda: "return id(p_term);"
-        d_term:
-          type: float
-          lambda: "return id(d_term);"
-        ff_term:
-          type: float
-          lambda: "return id(ff_term);"
+        p_term: p_term
+        d_term: d_term
+        ff_term: ff_term
         recovery_time_measured: compressor_recovery_time_measured_sensor
         pd_p_multiplier: pd_p_multiplier_number
         pd_d_multiplier_cooling: pd_d_multiplier_number

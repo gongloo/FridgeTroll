@@ -397,9 +397,11 @@ sensor:
             const float amb_temp = id(ambient_temp).state;
 
             if (std::isnan(comp_temp) || std::isnan(amb_temp)) {
-              auto call = id(compressor_cooling_fan).turn_on();
-              call.set_speed(100);
-              call.perform();
+              if (!id(compressor_cooling_fan).state || id(compressor_cooling_fan).speed < 100) {
+                auto call = id(compressor_cooling_fan).turn_on();
+                call.set_speed(100);
+                call.perform();
+              }
               return;
             }
 
@@ -408,9 +410,11 @@ sensor:
             // Checking this first ensures thermal protection even in high ambient conditions
             // where (comp_temp - amb_temp) might otherwise be smaller than min_delta.
             if (comp_temp >= kHighCompressorTemp) {
-              auto call = id(compressor_cooling_fan).turn_on();
-              call.set_speed(100);
-              call.perform();
+              if (!id(compressor_cooling_fan).state || id(compressor_cooling_fan).speed < 100) {
+                auto call = id(compressor_cooling_fan).turn_on();
+                call.set_speed(100);
+                call.perform();
+              }
               return;
             }
 
@@ -420,7 +424,7 @@ sensor:
             const float min_delta = 5.0f; // Fan starts ramping here
             const float max_delta = std::min(15.0f, kHighCompressorTemp - amb_temp); // Fan at max speed here
 
-            if (delta < min_delta) {
+            if (delta <= min_delta) {
               if (id(compressor_cooling_fan).state) {
                 id(compressor_cooling_fan).turn_off().perform();
               }
@@ -434,9 +438,13 @@ sensor:
             const float denom = std::max(0.1f, max_delta - min_delta);
             const float speed_factor = (delta - min_delta) / denom;
             const float speed_percent = kMinFanSpeed + (kMaxFanSpeed - kMinFanSpeed) * speed_factor;
-            auto call = id(compressor_cooling_fan).turn_on();
-            call.set_speed(std::clamp(speed_percent, kMinFanSpeed, kMaxFanSpeed));
-            call.perform();
+            const float clamped_speed = std::clamp(speed_percent, kMinFanSpeed, kMaxFanSpeed);
+
+            if (!id(compressor_cooling_fan).state || std::abs(id(compressor_cooling_fan).speed - clamped_speed) > 1.0f) {
+              auto call = id(compressor_cooling_fan).turn_on();
+              call.set_speed(clamped_speed);
+              call.perform();
+            }
 
   - platform: dallas_temp
     name: "Ambient"
@@ -1045,6 +1053,16 @@ script:
             speed_pct += (error / ramp_band) * (max_speed - min_speed);
           }
           speed_pct = std::clamp(speed_pct, min_speed, max_speed);
+
+          // If calculated target speed is 0% (e.g. min_speed set to 0 and error <= 0),
+          // ensure the fan is turned off instead of passing 0% to set_speed(), which
+          // ESPHome's FanCall clamps to 1% minimum speed.
+          if (speed_pct <= 0.0f) {
+            if (id(fridge_fan).state) {
+              id(fridge_fan).turn_off().perform();
+            }
+            return;
+          }
 
           if (!id(fridge_fan).state || std::abs(id(fridge_fan).speed - speed_pct) > 1.0f) {
             ESP_LOGD("update_fridge_fan", "Proportional fan speed: %.1f%% (error: %.2f°C)", speed_pct, error);

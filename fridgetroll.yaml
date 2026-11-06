@@ -1091,6 +1091,7 @@ script:
       - lambda: |-
           static uint32_t last_compressor_speed_change = 0;
           static bool defrosting_after_deep_chill = false;
+          static bool prev_defrost_mode = false;
           static uint32_t deep_chill_start_ms = 0;
 
           // Sliding window state
@@ -1108,6 +1109,7 @@ script:
             temp_history.clear();
             last_eval_time = 0;
             defrosting_after_deep_chill = false;
+            prev_defrost_mode = false;
             ESP_LOGW("update_compressor", "Manual override is on; skipping automatic speed update.");
             if (id(defrost_mode).state) {
               ESP_LOGW("update_compressor", "Manual override is on; disabling defrost.");
@@ -1200,10 +1202,23 @@ script:
           // Defrost rest period.
           if (id(defrost_mode).state && defrosting_after_deep_chill) {
             if (id(compressor_off_time).state < ${defrost_duration_s}) {
+              if (!prev_defrost_mode) {
+                ESP_LOGI("defrost", "Defrost mode enabled while compressor off with post-chill rest active (elapsed: %.0fs / %us); resuming rest period.",
+                         id(compressor_off_time).state, ${defrost_duration_s});
+              }
+              prev_defrost_mode = id(defrost_mode).state;
               return;
+            }
+            if (!prev_defrost_mode) {
+              ESP_LOGI("defrost", "Defrost mode enabled, but required post-chill rest was already completed during this off-cycle (off time: %.0fs >= %us); exiting defrost mode.",
+                       id(compressor_off_time).state, ${defrost_duration_s});
+            } else {
+              ESP_LOGI("defrost", "Defrost rest period complete (off time: %.0fs >= %us); exiting defrost mode.",
+                       id(compressor_off_time).state, ${defrost_duration_s});
             }
             id(defrost_mode).publish_state(false);
           }
+          prev_defrost_mode = id(defrost_mode).state;
 
           // Freeze protection logic.
           static bool freeze_protection_active = false;

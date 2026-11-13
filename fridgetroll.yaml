@@ -36,7 +36,7 @@ esphome:
   comment: "Smart refrigerator controller providing advanced temperature management, automated defrost, and telemetry"
   project:
     name: "gongloo.${name}"
-    version: "0.7.1"
+    version: "0.7.2"
   min_version: 2026.10.0
   on_boot:
     # Priority 700.0 runs after TemplateText restoration (800.0) but before Dallas
@@ -46,13 +46,24 @@ esphome:
       then:
         - lambda: |-
             static const char *empty_addrs[] = {nullptr};
+            #if ESPHOME_VERSION_CODE >= VERSION_CODE(2026, 12, 0)
+            static esphome::udp::UDPComponent::SockaddrEntry syslog_storage[1];
+            #endif
             if (!id(syslog_ip_text).state.empty()) {
               static std::string s_syslog_ip = id(syslog_ip_text).state;
               static const char *syslog_addrs[] = {s_syslog_ip.c_str(), nullptr};
+              #if ESPHOME_VERSION_CODE >= VERSION_CODE(2026, 12, 0)
+              id(syslog_udp)->set_addresses(syslog_addrs, syslog_storage);
+              #else
               id(syslog_udp)->set_addresses(syslog_addrs);
+              #endif
             } else {
               // Clear address table to prevent fallback broadcast to 255.255.255.255
+              #if ESPHOME_VERSION_CODE >= VERSION_CODE(2026, 12, 0)
+              id(syslog_udp)->set_addresses(empty_addrs, {});
+              #else
               id(syslog_udp)->set_addresses(empty_addrs);
+              #endif
             }
             if (id(syslog_port_number).state > 0) {
               id(syslog_udp)->set_broadcast_port(id(syslog_port_number).state);
